@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <jni.h>
+#include <time.h>
 #include "ass.h"
 
 #define LOG_TAG "SubtitleRenderer"
@@ -263,7 +264,17 @@ static int count_ass_images(ASS_Image *images) {
 
 jobject nativeAssRenderFrame(JNIEnv* env, jclass clazz, jlong render, jlong track, jlong time, jboolean onlyAlpha) {
     int changed;
+    struct timespec start, end;
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
     ASS_Image *image = ass_render_frame((ASS_Renderer *) render, (ASS_Track *) track, time, &changed);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    double elapsed_ms = (end.tv_sec - start.tv_sec) * 1000.0 +
+                        (end.tv_nsec - start.tv_nsec) / 1e6;
+
+    __android_log_print(ANDROID_LOG_ERROR, "Performance", "Temps %.3f ms", elapsed_ms);
+
     if (image == NULL) {
         return NULL;
     }

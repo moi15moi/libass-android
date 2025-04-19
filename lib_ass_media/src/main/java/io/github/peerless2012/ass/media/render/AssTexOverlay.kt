@@ -4,6 +4,7 @@ import android.opengl.GLES20
 import androidx.annotation.OptIn
 import androidx.media3.common.util.GlProgram
 import androidx.media3.common.util.GlUtil
+import androidx.media3.common.util.Log
 import androidx.media3.common.util.Size
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.TextureOverlay
@@ -77,6 +78,8 @@ class AssTexOverlay(private val render: AssRender) : TextureOverlay() {
     private lateinit var executor: AssExecutor
 
     override fun getTextureId(presentationTimeUs: Long): Int {
+        val startTime = System.nanoTime() // Fin du chrono
+
         val assFrame = executor.renderFrame(presentationTimeUs)
 
         // if content not change, just return the tex
@@ -157,6 +160,11 @@ class AssTexOverlay(private val render: AssRender) : TextureOverlay() {
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, preFbo[0])
         GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, preAlign[0])
 
+        val endTime = System.nanoTime() // Fin du chrono
+        val duration: Long = endTime - startTime // Durée en nanosecondes
+        Log.d("PerformanceJava", "Temps d'exécution : " + duration / 1_000_000 + " ms")
+
+
         return texId
     }
 
@@ -168,8 +176,8 @@ class AssTexOverlay(private val render: AssRender) : TextureOverlay() {
         super.configure(videoSize)
         this.texSize = videoSize
         executor = AssExecutor(render)
-        render.setFrameSize(videoSize.width, videoSize.height)
-        texId = GlUtil.createTexture(videoSize.width, videoSize.height, false)
+        render.setFrameSize(2170, 1020)
+        texId = GlUtil.createTexture(2170, 1020, false)
         fboId = GlUtil.createFboForTexture(texId)
         glProgram = GlProgram(vertexShaderCode, fragmentShaderCode)
         GlUtil.checkGlError()

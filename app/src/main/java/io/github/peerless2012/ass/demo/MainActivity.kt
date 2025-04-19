@@ -25,7 +25,7 @@ import io.github.peerless2012.ass.media.type.AssRenderType
 
 class MainActivity : AppCompatActivity() {
 
-    private var url = "http://192.168.0.254:80/files/f.mp4"
+    private var url = "asset:///performance.mkv"
 
     private lateinit var player: ExoPlayer
 
@@ -47,7 +47,7 @@ class MainActivity : AppCompatActivity() {
         player = ExoPlayer.Builder(this)
             .buildWithAssSupport(
                 this,
-                AssRenderType.CANVAS
+                AssRenderType.OPEN_GL
             )
         playerView = findViewById(R.id.main_player)
         playerView.player = player
