@@ -30,7 +30,7 @@ project("ass")
 add_library(${CMAKE_PROJECT_NAME} SHARED Ass.c)
 
 
-set(CMAKE_PREFIX_PATH "${CMAKE_BINARY_DIR}/lib/pkgconfig")
+set(CMAKE_PREFIX_PATH "${CMAKE_BINARY_DIR}")
 
 
 find_package(PkgConfig REQUIRED)
