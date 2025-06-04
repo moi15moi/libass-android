@@ -22,21 +22,28 @@ project("ass")
 # the target library name; in the sub-module's CMakeLists.txt, ${PROJECT_NAME}
 # is preferred for the same purpose.
 #
-include_directories(${CMAKE_BINARY_DIR}/include)
+#include_directories(${CMAKE_BINARY_DIR}/include)
 # In order to load a library into your app from Java/Kotlin, you must call
 # System.loadLibrary() and pass the name of the library defined here;
 # for GameActivity/NativeActivity derived applications, the same library name must be
 # used in the AndroidManifest.xml file.
 add_library(${CMAKE_PROJECT_NAME} SHARED Ass.c)
-add_dependencies(${CMAKE_PROJECT_NAME} ep_ass)
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBASS REQUIRED IMPORTED_TARGET libass)
+
+target_link_libraries(${CMAKE_PROJECT_NAME} PkgConfig::LIBASS)
+
+
+#add_dependencies(${CMAKE_PROJECT_NAME} ep_ass)
 #set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME "ass")
-target_include_directories(${CMAKE_PROJECT_NAME} PUBLIC ${CMAKE_BINARY_DIR}/include)
-target_link_directories(${CMAKE_PROJECT_NAME} PUBLIC ${CMAKE_BINARY_DIR}/lib)
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(FREE_TYPE_NAME "freetyped")
-else()
-    set(FREE_TYPE_NAME "freetype")
-endif()
-target_link_libraries(${CMAKE_PROJECT_NAME}
-        "-Wl,--whole-archive" libass.a fribidi ${FREE_TYPE_NAME} harfbuzz unibreak png "-Wl,--no-whole-archive"
-        z)
+#target_include_directories(${CMAKE_PROJECT_NAME} PUBLIC ${CMAKE_BINARY_DIR}/include)
+#target_link_directories(${CMAKE_PROJECT_NAME} PUBLIC ${CMAKE_BINARY_DIR}/lib)
+#if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+#    set(FREE_TYPE_NAME "freetyped")
+#else()
+#    set(FREE_TYPE_NAME "freetype")
+#endif()
+#target_link_libraries(${CMAKE_PROJECT_NAME}
+#        "-Wl,--whole-archive" libass.a fribidi ${FREE_TYPE_NAME} harfbuzz unibreak png "-Wl,--no-whole-archive"
+#        z)
