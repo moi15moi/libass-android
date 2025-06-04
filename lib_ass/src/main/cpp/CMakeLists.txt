@@ -29,6 +29,10 @@ project("ass")
 # used in the AndroidManifest.xml file.
 add_library(${CMAKE_PROJECT_NAME} SHARED Ass.c)
 
+
+set(CMAKE_PREFIX_PATH "${CMAKE_BINARY_DIR}/lib/pkgconfig")
+
+
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBASS REQUIRED IMPORTED_TARGET libass)
 
