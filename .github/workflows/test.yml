@@ -19,6 +19,10 @@ jobs:
 
     - uses: ./.github/actions/setup-libraries
 
+    - name: tree before
+      if: ${{ always() }}
+      run: tree
+
     - name: Enable KVM
       run: |
         echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -31,3 +35,7 @@ jobs:
         api-level: 21
         arch: ${{ matrix.arch }}
         script: ./gradlew test connectedAndroidTest
+
+    - name: tree after
+      if: ${{ always() }}
+      run: tree
