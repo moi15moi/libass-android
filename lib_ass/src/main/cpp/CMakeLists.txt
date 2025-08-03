@@ -1,32 +1,19 @@
-# For more information about using CMake with Android Studio, read the
-# documentation: https://d.android.com/studio/projects/add-native-code.html.
-# For more examples on how to use CMake, see https://github.com/android/ndk-samples.
-
-# Sets the minimum CMake version required for this project.
+# lib_ass/CMakeLists.txt
 cmake_minimum_required(VERSION 3.22.1)
+project("lib_ass")
 
-
-# Declares the project name. The project name can be accessed via ${ PROJECT_NAME},
-# Since this is the top level CMakeLists.txt, the project name is also accessible
-# with ${CMAKE_PROJECT_NAME} (both CMake variables are in-sync within the top level
-# build script scope).
-project("ass")
-
-
-
-set(libass_location "//wsl.localhost/Ubuntu/root/we/${ANDROID_ABI}")
-
-
-set(ENV{PKG_CONFIG_PATH} "${libass_location}/usr/local/lib/pkgconfig")
-
+set(libass_location "${CMAKE_SOURCE_DIR}/${ANDROID_ABI}")
+set(ENV{PKG_CONFIG_PATH} "${libass_location}/lib/pkgconfig")
 
 find_package(PkgConfig REQUIRED)
-
 pkg_search_module(PKG_LIBASS REQUIRED IMPORTED_TARGET libass)
 
+# Define our own interface target that wraps PkgConfig one
+add_library(lib_ass_interface INTERFACE)
 
-add_library(${CMAKE_PROJECT_NAME} SHARED Ass.c)
+# Forward include directories and link dependencies
+target_include_directories(lib_ass_interface INTERFACE "${libass_location}/include")
+target_link_libraries(lib_ass_interface INTERFACE PkgConfig::PKG_LIBASS)
 
-target_link_libraries(${CMAKE_PROJECT_NAME}
-        "-Wl,--whole-archive" PkgConfig::PKG_LIBASS "-Wl,--no-whole-archive"
-        z)
+# Optionally give it an alias name for external use
+add_library(lib_ass::ass ALIAS lib_ass_interface)

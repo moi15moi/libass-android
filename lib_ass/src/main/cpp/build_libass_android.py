@@ -45,8 +45,8 @@ class ToolchainEnvVar:
     STRIP: str
     YASM: str
     LDFLAGS: str
-    PKG_CONFIG_SYSROOT_DIR: str
-    PKG_CONFIG_LIBDIR: str
+    prefix: str
+    PKG_CONFIG_PATH: str
 
 
 def create_meson_cross_file(target: Target, toolchain_env_var: ToolchainEnvVar, build_dir: Path) -> Path:
@@ -58,6 +58,8 @@ def create_meson_cross_file(target: Target, toolchain_env_var: ToolchainEnvVar, 
     wrap_mode = 'nodownload'
     c_link_args = '{toolchain_env_var.LDFLAGS}'
     cpp_link_args = '{toolchain_env_var.LDFLAGS}'
+    prefix = '{toolchain_env_var.prefix}'
+    pkg_config_path = '{toolchain_env_var.PKG_CONFIG_PATH}'
 
     [binaries]
     c = '{toolchain_env_var.CC}'
@@ -76,10 +78,6 @@ def create_meson_cross_file(target: Target, toolchain_env_var: ToolchainEnvVar, 
     cpu_family = '{target.cpu_family}'
     cpu = '{target.cpu}'
     endian = 'little'
-
-    [properties]
-    sys_root = '{toolchain_env_var.PKG_CONFIG_SYSROOT_DIR}'
-    pkg_config_libdir = '{toolchain_env_var.PKG_CONFIG_LIBDIR}'
     """)
 
     meson_cross_file = build_dir.joinpath(f"{target.abi}.txt")
@@ -101,8 +99,7 @@ def prepare_autotools_env(toolchain_env_var: ToolchainEnvVar) -> dict:
         "STRIP": toolchain_env_var.STRIP,
         "YASM": toolchain_env_var.YASM,
         "LDFLAGS": toolchain_env_var.LDFLAGS,
-        "PKG_CONFIG_SYSROOT_DIR": toolchain_env_var.PKG_CONFIG_SYSROOT_DIR,
-        "PKG_CONFIG_LIBDIR": toolchain_env_var.PKG_CONFIG_LIBDIR,
+        "PKG_CONFIG_PATH": toolchain_env_var.PKG_CONFIG_PATH,
     })
 
     return env
@@ -166,7 +163,7 @@ def build_project(project: Project, target: Target, abi_version: int, toolchain_
         str(toolchain_path.joinpath("bin", "yasm")),
         "-Wl,-z,max-page-size=16384", # Android require 16 KB page sizes: https://developer.android.com/guide/practices/page-sizes
         str(target_dir),
-        str(target_dir.joinpath("usr", "local", "lib", "pkgconfig"))
+        str(target_dir.joinpath("lib", "pkgconfig"))
     )
 
     env_autotools = prepare_autotools_env(toolchain_env_var)
@@ -178,9 +175,7 @@ def build_project(project: Project, target: Target, abi_version: int, toolchain_
         subprocess.run(["meson", "setup", "build", "--cross-file", str(meson_cross_file)] + project.additional_build_flags, cwd=project_dir, check=True)
         subprocess.run(["ninja", "-C", "build"], cwd=project_dir, check=True)
 
-        env_ninja = os.environ.copy()
-        env_ninja["DESTDIR"] = str(target_dir)
-        subprocess.run(["ninja", "-C", "build", "install"], cwd=project_dir, check=True, env=env_ninja)
+        subprocess.run(["ninja", "-C", "build", "install"], cwd=project_dir, check=True)
 
         shutil.rmtree(project_dir.joinpath("build"))
         meson_cross_file.unlink()
@@ -188,12 +183,10 @@ def build_project(project: Project, target: Target, abi_version: int, toolchain_
         if not project_dir.joinpath("configure").is_file():
             subprocess.run(["./autogen.sh"], cwd=project_dir, check=True, env=env_autotools)
 
-        subprocess.run(["./configure", f"--host={target.triple}", "--enable-static", "--disable-shared", "--with-pic"] + project.additional_build_flags, cwd=project_dir, check=True, env=env_autotools)
+        subprocess.run(["./configure", f"--host={target.triple}", "--enable-static", "--disable-shared", "--with-pic", f"--prefix={toolchain_env_var.prefix}"] + project.additional_build_flags, cwd=project_dir, check=True, env=env_autotools)
         subprocess.run(["make"], cwd=project_dir, check=True, env=env_autotools)
 
-        env_make_install = env_autotools.copy()
-        env_make_install["DESTDIR"] = str(target_dir)
-        subprocess.run(["make", "install"], cwd=project_dir, check=True, env=env_make_install)
+        subprocess.run(["make", "install"], cwd=project_dir, check=True, env=env_autotools)
         subprocess.run(["make", "distclean"], cwd=project_dir, check=True, env=env_autotools)
 
 
