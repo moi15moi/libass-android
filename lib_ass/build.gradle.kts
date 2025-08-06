@@ -14,32 +14,18 @@ android {
     defaultConfig {
         minSdk = 21
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        consumerProguardFiles("consumer-rules.pro")
-        externalNativeBuild {
-            cmake {
-                arguments += listOf("-DANDROID_STL=c++_shared")
-            }
-        }
     }
 
     buildFeatures {
         prefabPublishing = true
+        prefab = true
     }
 
     buildTypes {
         debug {
-            externalNativeBuild {
-                cmake {
-                    cppFlags("-fno-omit-frame-pointer")
-                }
-            }
         }
         release {
             isMinifyEnabled = false
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
         }
     }
 
@@ -59,9 +45,17 @@ android {
         }
     }
 
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+            // Prevent stripping .so files (for debug and to preserve all symbols)
+            keepDebugSymbols += setOf("**/*.so")
+        }
+    }
+
     prefab {
-        create("ass") {
-            headers = "src/main/cpp/include"
+        create("libass") {
+            headers = "src/main/cpp/build_native_lib/include"
         }
     }
 }

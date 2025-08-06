@@ -54,7 +54,7 @@ def create_meson_cross_file(target: Target, toolchain_env_var: ToolchainEnvVar, 
     meson_cross_file_content = dedent(f"""
     [built-in options]
     buildtype = 'release'
-    default_library = 'static'
+    default_library = 'shared'
     wrap_mode = 'nodownload'
     c_link_args = '{toolchain_env_var.LDFLAGS}'
     cpp_link_args = '{toolchain_env_var.LDFLAGS}'
@@ -145,7 +145,7 @@ def download_and_extract(project: Project, build_dir: Path) -> Path:
     return project_dir
 
 
-def build_project(project: Project, target: Target, abi_version: int, toolchain_path: Path, build_dir: Path):
+def build_project(project: Project, target: Target, abi_version: int, toolchain_path: Path, build_dir: Path, jniLibs: Path):
     print(f"=== Building {project.name} for {target.abi} ===")
 
     target_dir = build_dir.joinpath(target.abi)
@@ -183,11 +183,17 @@ def build_project(project: Project, target: Target, abi_version: int, toolchain_
         if not project_dir.joinpath("configure").is_file():
             subprocess.run(["./autogen.sh"], cwd=project_dir, check=True, env=env_autotools)
 
-        subprocess.run(["./configure", f"--host={target.triple}", "--enable-static", "--disable-shared", "--with-pic", f"--prefix={toolchain_env_var.prefix}"] + project.additional_build_flags, cwd=project_dir, check=True, env=env_autotools)
+        subprocess.run(["./configure", f"--host={target.triple}", "--enable-shared", "--disable-static", "--with-pic", f"--prefix={toolchain_env_var.prefix}"] + project.additional_build_flags, cwd=project_dir, check=True, env=env_autotools)
         subprocess.run(["make"], cwd=project_dir, check=True, env=env_autotools)
 
         subprocess.run(["make", "install"], cwd=project_dir, check=True, env=env_autotools)
         subprocess.run(["make", "distclean"], cwd=project_dir, check=True, env=env_autotools)
+    
+    lib_path = Path(toolchain_env_var.prefix).joinpath("lib", f"lib{project.name}.so")
+    if not lib_path.is_file():
+        raise FileNotFoundError(f"The file \"{lib_path}\" doesn't exist.")
+
+    shutil.copy(lib_path, jniLibs)
 
 
 def main() -> None:
@@ -207,23 +213,22 @@ def main() -> None:
         required=True,
     )
 
-    parser.add_argument(
-        "--build-dir",
-        type=Path,
-        required=False,
-        default=Path().cwd()
-    )
 
     args = parser.parse_args()
     ndk_path: Path = args.ndk_path
     abi_version: int = args.abi_version
-    build_dir: Path = args.build_dir
 
     if not ndk_path.is_dir():
         raise NotADirectoryError(f"The path you provided \"{ndk_path.absolute()}\" doesn't exist")
-    build_dir.mkdir(exist_ok=True)
-
+    
     toolchain_path = get_toolchain_path(ndk_path)
+
+    python_file_dir = Path(__file__)
+
+    build_dir = python_file_dir.parent.joinpath("build_native_lib")
+    if build_dir.is_dir():
+        shutil.rmtree(build_dir)
+    build_dir.mkdir()
 
     targets = [
         Target("armeabi-v7a", "armv7a-linux-androideabi", "armv7a", "arm"),
@@ -236,15 +241,23 @@ def main() -> None:
         Project("harfbuzz", "https://github.com/harfbuzz/harfbuzz/releases/download/11.3.3/harfbuzz-11.3.3.tar.xz", BuildSystem.MESON, ["-Dtests=disabled", "-Ddocs=disabled", "-Dutilities=disabled"]),
         Project("freetype", "https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.xz", BuildSystem.AUTOTOOLS, ["--with-harfbuzz=yes", "--with-zlib=no"]),
         Project("fribidi", "https://github.com/fribidi/fribidi/releases/download/v1.0.16/fribidi-1.0.16.tar.xz", BuildSystem.MESON, ["-Ddocs=false", "-Dtests=false"]),
-        Project("libunibreak", "https://github.com/adah1972/libunibreak/releases/download/libunibreak_6_1/libunibreak-6.1.tar.gz", BuildSystem.AUTOTOOLS, []),
+        Project("unibreak", "https://github.com/adah1972/libunibreak/releases/download/libunibreak_6_1/libunibreak-6.1.tar.gz", BuildSystem.AUTOTOOLS, []),
         Project("expat", "https://github.com/libexpat/libexpat/releases/download/R_2_7_1/expat-2.7.1.tar.xz", BuildSystem.AUTOTOOLS, ["--without-tests", "--without-docbook"]),
         Project("fontconfig", "https://www.freedesktop.org/software/fontconfig/release/fontconfig-2.16.0.tar.xz", BuildSystem.MESON, ["-Dtests=disabled", "-Ddoc=disabled", "-Dtools=disabled", "-Dxml-backend=expat"]),
-        Project("libass", "https://github.com/libass/libass/releases/download/0.17.3/libass-0.17.3.tar.xz", BuildSystem.AUTOTOOLS, ["--enable-fontconfig", "--enable-libunibreak"]),
+        Project("ass", "https://github.com/libass/libass/releases/download/0.17.3/libass-0.17.3.tar.xz", BuildSystem.AUTOTOOLS, ["--enable-fontconfig", "--enable-libunibreak"]),
     ]
 
     for target in targets:
+        jniLibs = python_file_dir.parent.parent.joinpath("jniLibs", target.abi)
+        if jniLibs.is_dir():
+            shutil.rmtree(jniLibs)
+        jniLibs.mkdir(parents=True)
+
         for project in projects:
-            build_project(project, target, abi_version, toolchain_path, build_dir)
+            build_project(project, target, abi_version, toolchain_path, build_dir, jniLibs)
+
+    include_dir = build_dir.joinpath("include")
+    shutil.copytree(build_dir.joinpath(targets[0].abi, "include"), include_dir)
 
 
 if __name__ == "__main__":

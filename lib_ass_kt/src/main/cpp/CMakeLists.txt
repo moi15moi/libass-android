@@ -27,9 +27,20 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 add_library(${CMAKE_PROJECT_NAME} SHARED AssKt.c)
 # Add these two lines.
 find_package(lib_ass REQUIRED CONFIG)
+
+get_target_property(ass_location lib_ass::libass IMPORTED_LOCATION)
+get_target_property(ass_type lib_ass::libass TYPE)
+get_target_property(ass_includes lib_ass::libass INTERFACE_INCLUDE_DIRECTORIES)
+get_target_property(ass_link_libs lib_ass::libass INTERFACE_LINK_LIBRARIES)
+
+message(STATUS "lib_ass::ass LOCATION: ${ass_location}")
+message(STATUS "lib_ass::ass TYPE: ${ass_type}")
+message(STATUS "lib_ass::ass INCLUDE DIRS: ${ass_includes}")
+message(STATUS "lib_ass::ass LINK LIBS: ${ass_link_libs}")
+
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME "asskt")
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
-        lib_ass::ass
+        lib_ass::libass
         android
         jnigraphics
         z
