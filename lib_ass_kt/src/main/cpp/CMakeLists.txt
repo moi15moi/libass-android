@@ -26,21 +26,33 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 # used in the AndroidManifest.xml file.
 add_library(${CMAKE_PROJECT_NAME} SHARED AssKt.c)
 # Add these two lines.
-find_package(lib_ass REQUIRED CONFIG)
 
-get_target_property(ass_location lib_ass::libass IMPORTED_LOCATION)
-get_target_property(ass_type lib_ass::libass TYPE)
-get_target_property(ass_includes lib_ass::libass INTERFACE_INCLUDE_DIRECTORIES)
-get_target_property(ass_link_libs lib_ass::libass INTERFACE_LINK_LIBRARIES)
 
-message(STATUS "lib_ass::ass LOCATION: ${ass_location}")
-message(STATUS "lib_ass::ass TYPE: ${ass_type}")
-message(STATUS "lib_ass::ass INCLUDE DIRS: ${ass_includes}")
-message(STATUS "lib_ass::ass LINK LIBS: ${ass_link_libs}")
+#set(libass_location "${CMAKE_CURRENT_SOURCE_DIR}/build_native_lib/${ANDROID_ABI}")
+#set(ENV{PKG_CONFIG_PATH} "${libass_location}/lib/pkgconfig")
+#find_package(PkgConfig REQUIRED)
+#pkg_search_module(PKG_LIBASS REQUIRED IMPORTED_TARGET libass)
+
+foreach(lib harfbuzz freetype fribidi unibreak expat fontconfig ass)
+    add_library(${lib}
+            SHARED
+            IMPORTED)
+
+    set_target_properties(
+            ${lib}
+            PROPERTIES IMPORTED_LOCATION
+            ${CMAKE_CURRENT_SOURCE_DIR}/build_native_lib/${ANDROID_ABI}/lib/lib${lib}.so)
+
+endforeach()
+
+
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/build_native_lib/${ANDROID_ABI}/include)
+
+
 
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME "asskt")
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
-        lib_ass::libass
+        harfbuzz freetype fribidi unibreak expat fontconfig ass
         android
         jnigraphics
         z
