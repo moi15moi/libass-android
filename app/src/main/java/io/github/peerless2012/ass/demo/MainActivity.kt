@@ -27,7 +27,7 @@ import androidx.core.net.toUri
 
 class MainActivity : AppCompatActivity() {
 
-    private var url = "http://192.168.0.254:80/files/c.mkv"
+    private var url = "asset:///test_video.mkv"
 
     private lateinit var player: ExoPlayer
 
@@ -50,7 +50,7 @@ class MainActivity : AppCompatActivity() {
         player = ExoPlayer.Builder(this)
             .buildWithAssSupport(
                 this,
-                AssRenderType.OVERLAY,
+                AssRenderType.OPEN_GL,
                 playerView.subtitleView
             )
         playerView.player = player

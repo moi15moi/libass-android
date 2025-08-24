@@ -18,7 +18,6 @@ android {
 
     buildFeatures {
         prefabPublishing = true
-        prefab = true
     }
 
     buildTypes {
@@ -45,16 +44,8 @@ android {
         }
     }
 
-    packaging {
-        jniLibs {
-            useLegacyPackaging = true
-            // Prevent stripping .so files (for debug and to preserve all symbols)
-            keepDebugSymbols += setOf("**/*.so")
-        }
-    }
-
     prefab {
-        create("libass") {
+        create("ass") {
             headers = "src/main/cpp/build_native_lib/include"
         }
     }

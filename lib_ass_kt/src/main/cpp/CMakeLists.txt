@@ -33,7 +33,7 @@ add_library(${CMAKE_PROJECT_NAME} SHARED AssKt.c)
 #find_package(PkgConfig REQUIRED)
 #pkg_search_module(PKG_LIBASS REQUIRED IMPORTED_TARGET libass)
 
-foreach(lib harfbuzz freetype fribidi unibreak expat fontconfig ass)
+foreach(lib harfbuzz freetype fribidi unibreak expat fontconfig ass placebo)
     add_library(${lib}
             SHARED
             IMPORTED)
@@ -52,7 +52,7 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/build_native_lib/${ANDROID_ABI}/
 
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME "asskt")
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
-        harfbuzz freetype fribidi unibreak expat fontconfig ass
+        harfbuzz freetype fribidi unibreak expat fontconfig ass placebo
         android
         jnigraphics
         z

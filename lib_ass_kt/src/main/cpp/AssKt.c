@@ -6,10 +6,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <jni.h>
+#include <EGL/egl.h>   // On Android you already have EGL context active
+#include <GLES3/gl3.h>
 #include "ass/ass.h"
 #include "fontconfig/fontconfig.h"
-
+#include "libplacebo/log.h"
+#include "libplacebo/renderer.h"
+#include "libplacebo/opengl.h"
 #define LOG_TAG "SubtitleRenderer"
 
 void assMessageCallback(int level, const char *fmt, va_list args, void *data) {
@@ -274,11 +279,148 @@ static int count_ass_images(ASS_Image *images) {
 }
 
 jobject nativeAssRenderFrame(JNIEnv* env, jclass clazz, jlong render, jlong track, jlong time, jboolean onlyAlpha) {
+
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
     int changed;
     ASS_Image *image = ass_render_frame((ASS_Renderer *) render, (ASS_Track *) track, time, &changed);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    double elapsed_ms = (end.tv_sec - start.tv_sec) * 1000.0 +
+                        (end.tv_nsec - start.tv_nsec) / 1000000.0;
+
+    __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "ass_render_frame took %.3f ms", elapsed_ms);
+
     if (image == NULL) {
         return NULL;
     }
+   /* pl_log pllog = pl_log_create(PL_API_VER, pl_log_params(
+            .log_cb = pl_log_color,
+            .log_level = PL_LOG_INFO,
+    ));
+
+
+    // 2. Create OpenGL backend
+    struct pl_opengl_params gl_params = {
+            .get_proc_addr = (void*)eglGetProcAddress,
+            .allow_software     = true,         // allow software rasterers
+            .debug              = true,         // enable error reporting
+    };
+    pl_opengl plgl = pl_opengl_create(pllog, &gl_params);
+    if (!plgl) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Failed to create pl_opengl");
+        return NULL;
+    }
+
+    // 3. Create libplacebo renderer
+    pl_renderer renderer = pl_renderer_create(pllog, plgl->gpu);
+    if (!renderer) {
+        fprintf(stderr, "Failed to create renderer\n");
+        pl_opengl_destroy(&plgl);
+        return NULL;
+    }
+
+    pl_fmt format = pl_find_named_fmt(plgl->gpu, "bgra8");
+    if (!format) {
+        return NULL;
+    }
+
+    // 4. Create output pl_tex (render target)
+    struct pl_tex_params out_params = {
+            .w = 640,
+            .h = 480,
+            .format = format,
+            .sampleable = true,
+            .storable = true,
+            .renderable = true,
+    };
+    pl_tex out_tex = pl_tex_create(plgl->gpu, &out_params);
+    if (!out_tex) {
+        fprintf(stderr, "Failed to create output texture\n");
+        pl_renderer_destroy(&renderer);
+        pl_opengl_destroy(&plgl);
+        return NULL;
+    }
+
+    // 5. Upload overlay textures (2 overlays)
+    struct pl_tex *overlays[2];
+    overlays[0] = pl_upload_plane(ctx, plgl->gpu, &(struct pl_plane_data) {
+            .pixels = overlay1,
+            .type = PL_FMT_UNORM8,
+            .width = 2,
+            .height = 1,
+            .stride_w = 8,
+            .components = 4
+    });
+    overlays[1] = pl_upload_plane(ctx, plgl->gpu, &(struct pl_plane_data) {
+            .pixels = overlay2,
+            .type = PL_FMT_UNORM8,
+            .width = 2,
+            .height = 1,
+            .stride_w = 8,
+            .components = 4
+    });
+
+    if (!overlays[0] || !overlays[1]) {
+        fprintf(stderr, "Failed to upload overlays\n");
+        if (overlays[0]) pl_tex_destroy(&overlays[0]);
+        if (overlays[1]) pl_tex_destroy(&overlays[1]);
+        pl_tex_destroy(&out_tex);
+        pl_renderer_destroy(&renderer);
+        pl_opengl_destroy(&plgl);
+        pl_context_destroy(&ctx);
+        return NULL;
+    }
+
+    // 6. Prepare overlay parts & overlay descriptors
+    struct pl_overlay_part parts[2];
+    struct pl_overlay overlay_desc[2];
+    for (int i = 0; i < 2; i++) {
+        parts[i] = (struct pl_overlay_part) {
+                .src = {0, 0, overlays[i]->params.w, overlays[i]->params.h},
+                .dst = {i * 100, i * 50, 200, 100},  // example placement
+        };
+        overlay_desc[i] = (struct pl_overlay) {
+                .tex = overlays[i],
+                .mode = PL_OVERLAY_NORMAL,
+                .repr = pl_find_repr(ctx, PL_COLOR_SYSTEM_RGB, PL_COLOR_LEVELS_PC),
+                .color = pl_color_space_srgb,
+                .coords = PL_OVERLAY_COORDS_DST_FRAME,
+                .parts = &parts[i],
+                .num_parts = 1,
+        };
+    }
+
+    // 7. Prepare target frame
+    struct pl_frame target = {0};
+    // Associate the output texture with target frame for rendering
+    // (Placing the texture as render target is implicit in pl_render_image)
+    target.tex = out_tex;
+
+    target.overlays = overlay_desc;
+    target.num_overlays = 2;
+
+    // 8. Render overlays (no base frame, just overlays)
+    pl_render_image(renderer, NULL, &target, &pl_render_default_params);
+
+    // 9. Extract OpenGL texture ID from out_tex
+    unsigned int target_type, iformat, fbo;
+    GLuint tex_id = pl_opengl_unwrap(plgl->gpu, out_tex, &target_type, (int *)&iformat, &fbo);
+    printf("Libplacebo output GL texture ID: %u\n", tex_id);
+
+    // Here you can pass tex_id to Media3 TextureOverlay for rendering.
+
+    // 10. Cleanup
+    for (int i = 0; i < 2; i++)
+        pl_tex_destroy(&overlays[i]);
+    pl_tex_destroy(&out_tex);
+    pl_renderer_destroy(&renderer);
+    pl_opengl_destroy(&plgl);
+    pl_context_destroy(&ctx);*/
+
+
+
     jclass assFrameClass = (*env)->FindClass(env, "io/github/peerless2012/ass/AssFrame");
     jmethodID assFrameConstructor = (*env)->GetMethodID(env, assFrameClass, "<init>", "([Lio/github/peerless2012/ass/AssTex;I)V");
 

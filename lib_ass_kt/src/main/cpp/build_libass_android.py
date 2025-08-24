@@ -1,3 +1,4 @@
+from abc import ABC, abstractmethod
 import os
 import shutil
 import subprocess
@@ -25,10 +26,59 @@ class BuildSystem(Enum):
     AUTOTOOLS = auto()
 
 
+class ABCProjectDownload(ABC):
+
+    @abstractmethod
+    def download_and_extract(self, build_dir: Path) -> Path:
+        pass
+
+
+class ProjectDownloadTar(ABCProjectDownload):
+
+    def __init__(self, download_url: str):
+        self.download_url = download_url
+
+    def download_and_extract(self, build_dir: Path) -> Path:
+        url_file_path = PurePosixPath(urlparse(self.download_url).path).name # Ex: libass-0.17.3.tar.xz
+        url_file_name = url_file_path.rsplit(".", 2)[0] # Ex: libass-0.17.3
+
+        project_dir = build_dir.joinpath(url_file_name)
+        if not project_dir.is_dir():
+            tar_path = build_dir.joinpath(url_file_path)
+
+            print(f"Downloading {self.download_url}...")
+            request.urlretrieve(self.download_url, tar_path)
+
+            print(f"Extracting {tar_path}...")
+            with tarfile.open(tar_path, "r:*") as tar:
+                tar.extractall(path=build_dir)
+
+        return project_dir
+
+
+class ProjectDownloadGit(ABCProjectDownload):
+
+    def __init__(self, git_repos_url: str, tag: str, recursive: bool):
+        self.git_repos_url = git_repos_url
+        self.tag = tag
+        self.recursive = recursive
+
+    def download_and_extract(self, build_dir: Path) -> Path:
+        project_file = PurePosixPath(urlparse(self.git_repos_url).path).name # Ex: libplacebo.git
+        project_name = project_file.rsplit(".", 1)[0] # Ex: libass-0.17.3
+
+        project_dir = build_dir.joinpath(project_name)
+        print()
+        subprocess.run(["git", "clone", "--branch", self.tag, "--single-branch"] + (["--recursive"] if self.recursive else []) + [self.git_repos_url], cwd=build_dir, check=True)
+
+        return project_dir
+
+
+
 @dataclass
 class Project:
     name: str
-    download_url: str
+    project_download: ABCProjectDownload
     build_system: BuildSystem
     additional_build_flags: list[str]
     additional_build_flags_for_abi: dict[str, list[str]] # Key: ABI (ex: "arm64-v8a"). Value: List of flags
@@ -128,24 +178,6 @@ def get_toolchain_path(ndk_path: Path) -> Path:
     return toolchain_path
 
 
-def download_and_extract(project: Project, build_dir: Path) -> Path:
-    url_file_path = PurePosixPath(urlparse(project.download_url).path).name # Ex: libass-0.17.3.tar.xz
-    url_file_name = url_file_path.rsplit(".", 2)[0] # Ex: libass-0.17.3
-
-    project_dir = build_dir.joinpath(url_file_name)
-    if not project_dir.is_dir():
-        tar_path = build_dir.joinpath(url_file_path)
-
-        print(f"Downloading {project.name}...")
-        request.urlretrieve(project.download_url, tar_path)
-
-        print(f"Extracting {tar_path}...")
-        with tarfile.open(tar_path, "r:*") as tar:
-            tar.extractall(path=build_dir)
-
-    return project_dir
-
-
 def build_project(project: Project, target: Target, abi_version: int, toolchain_path: Path, build_dir: Path, jniLibs: Path):
     print(f"=== Building {project.name} for {target.abi} ===")
 
@@ -168,7 +200,7 @@ def build_project(project: Project, target: Target, abi_version: int, toolchain_
     )
 
     env_autotools = prepare_autotools_env(toolchain_env_var)
-    project_dir = download_and_extract(project, build_dir)
+    project_dir = project.project_download.download_and_extract(build_dir)
 
     if project.build_system == BuildSystem.MESON:
         meson_cross_file = create_meson_cross_file(target, toolchain_env_var, build_dir)
@@ -239,13 +271,14 @@ def main() -> None:
     ]
 
     projects = [
-        Project("harfbuzz", "https://github.com/harfbuzz/harfbuzz/releases/download/11.3.3/harfbuzz-11.3.3.tar.xz", BuildSystem.MESON, ["-Dtests=disabled", "-Ddocs=disabled", "-Dutilities=disabled"], {}),
-        Project("freetype", "https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.xz", BuildSystem.AUTOTOOLS, ["--with-harfbuzz=yes", "--with-zlib=no"], {}),
-        Project("fribidi", "https://github.com/fribidi/fribidi/releases/download/v1.0.16/fribidi-1.0.16.tar.xz", BuildSystem.MESON, ["-Ddocs=false", "-Dtests=false"], {}),
-        Project("unibreak", "https://github.com/adah1972/libunibreak/releases/download/libunibreak_6_1/libunibreak-6.1.tar.gz", BuildSystem.AUTOTOOLS, [], {}),
-        Project("expat", "https://github.com/libexpat/libexpat/releases/download/R_2_7_1/expat-2.7.1.tar.xz", BuildSystem.AUTOTOOLS, ["--without-tests", "--without-docbook"], {}),
-        Project("fontconfig", "https://www.freedesktop.org/software/fontconfig/release/fontconfig-2.16.0.tar.xz", BuildSystem.MESON, ["-Dtests=disabled", "-Ddoc=disabled", "-Dtools=disabled", "-Dxml-backend=expat"], {}),
-        Project("ass", "https://github.com/libass/libass/releases/download/0.17.3/libass-0.17.3.tar.xz", BuildSystem.AUTOTOOLS, ["--enable-fontconfig", "--enable-libunibreak"], {"arm64-v8a": ["--enable-asm"], "x86": ["--enable-asm"], "x86-64": ["--enable-asm"]}),
+        Project("harfbuzz", ProjectDownloadTar("https://github.com/harfbuzz/harfbuzz/releases/download/11.3.3/harfbuzz-11.3.3.tar.xz"), BuildSystem.MESON, ["-Dtests=disabled", "-Ddocs=disabled", "-Dutilities=disabled"], {}),
+        Project("freetype", ProjectDownloadTar("https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.xz"), BuildSystem.AUTOTOOLS, ["--with-harfbuzz=yes", "--with-zlib=no"], {}),
+        Project("fribidi", ProjectDownloadTar("https://github.com/fribidi/fribidi/releases/download/v1.0.16/fribidi-1.0.16.tar.xz"), BuildSystem.MESON, ["-Ddocs=false", "-Dtests=false"], {}),
+        Project("unibreak", ProjectDownloadTar("https://github.com/adah1972/libunibreak/releases/download/libunibreak_6_1/libunibreak-6.1.tar.gz"), BuildSystem.AUTOTOOLS, [], {}),
+        Project("expat", ProjectDownloadTar("https://github.com/libexpat/libexpat/releases/download/R_2_7_1/expat-2.7.1.tar.xz"), BuildSystem.AUTOTOOLS, ["--without-tests", "--without-docbook"], {}),
+        Project("fontconfig", ProjectDownloadTar("https://www.freedesktop.org/software/fontconfig/release/fontconfig-2.16.0.tar.xz"), BuildSystem.MESON, ["-Dtests=disabled", "-Ddoc=disabled", "-Dtools=disabled", "-Dxml-backend=expat"], {}),
+        Project("ass", ProjectDownloadTar("https://github.com/libass/libass/releases/download/0.17.3/libass-0.17.3.tar.xz"), BuildSystem.AUTOTOOLS, ["--enable-fontconfig", "--enable-libunibreak"], {"arm64-v8a": ["--enable-asm"], "x86": ["--enable-asm"], "x86-64": ["--enable-asm"]}),
+        Project("placebo", ProjectDownloadGit("https://code.videolan.org/videolan/libplacebo.git", "v7.351.0", True), BuildSystem.MESON, ["-Dopengl=enabled", "-Ddemos=false"], {}),
     ]
 
     for target in targets:
