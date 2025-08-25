@@ -68,11 +68,10 @@ class ProjectDownloadGit(ABCProjectDownload):
         project_name = project_file.rsplit(".", 1)[0] # Ex: libass-0.17.3
 
         project_dir = build_dir.joinpath(project_name)
-        print()
-        subprocess.run(["git", "clone", "--branch", self.tag, "--single-branch"] + (["--recursive"] if self.recursive else []) + [self.git_repos_url], cwd=build_dir, check=True)
+        if not project_dir.is_dir():
+            subprocess.run(["git", "clone", "--branch", self.tag, "--single-branch"] + (["--recursive"] if self.recursive else []) + [self.git_repos_url], cwd=build_dir, check=True)
 
         return project_dir
-
 
 
 @dataclass
