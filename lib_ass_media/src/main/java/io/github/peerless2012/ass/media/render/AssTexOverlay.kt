@@ -1,6 +1,7 @@
 package io.github.peerless2012.ass.media.render
 
 import android.opengl.GLES20
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.util.GlProgram
 import androidx.media3.common.util.GlUtil
@@ -83,93 +84,24 @@ class AssTexOverlay(private val handler: AssHandler, private val render: AssRend
         } else {
             presentationTimeUs
         }
-        val assFrame = executor.renderFrame(timeUs)
+        val texId = executor.renderFrame(timeUs)
 
-        // if content not change, just return the tex
-        if (assFrame != null && assFrame.changed == 0) {
-            return texId
+        if (texId == null){
+            this.texId = 0
+        } else {
+            this.texId = texId.toInt()
         }
 
-        // no content && tex is clean, just return the tex
-        if (assFrame == null && !texDirty) {
-            return texId
-        }
+        Log.d("SubtitleRenderer", "We got textid=$texId")
 
-        // save the pre params
-        GLES20.glGetIntegerv(GLES20.GL_FRAMEBUFFER_BINDING, preFbo, 0)
-        GLES20.glGetIntegerv(GLES20.GL_VIEWPORT, preViewPort, 0);
-        GLES20.glGetIntegerv(GLES20.GL_ACTIVE_TEXTURE, preTex, 0)
-        GLES20.glGetIntegerv(GLES20.GL_UNPACK_ALIGNMENT, preAlign, 0)
-
-        // use fbo
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fboId)
-        GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, texId, 0)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GlUtil.checkGlError()
-
-        // clear tex content
-        GlUtil.clearFocusedBuffers()
-        texDirty = false
-
-        // enable blend
-        GLES20.glEnable(GLES20.GL_BLEND);
-        // set blend mode
-        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
-
-        // render each frame
-        assFrame?.images?.let { frames ->
-            texDirty = true
-            // ALPHA_8 need set pixel store to 1
-            // Or the render result may error or crash
-            GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1)
-            val preProgram = IntArray(1)
-            GLES20.glGetIntegerv(GLES20.GL_CURRENT_PROGRAM, preProgram, 0)
-            glProgram.use()
-            val aPosition = glProgram.getAttributeArrayLocationAndEnable("a_Position")
-            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vertexBufferId)
-            GLES20.glVertexAttribPointer(aPosition, 2, GLES20.GL_FLOAT, false, 0, 0)
-            GlUtil.checkGlError()
-            val aTexCoord = glProgram.getAttributeArrayLocationAndEnable("a_TexCoord")
-            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, texCoordBufferId)
-            GLES20.glVertexAttribPointer(aTexCoord, 2, GLES20.GL_FLOAT, false, 0, 0)
-            GlUtil.checkGlError()
-            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
-
-            frames.forEach { frame ->
-                frame.bitmap?.let { bitmap ->
-                    val r = frame.color shr 24 and 0xFF
-                    val g = frame.color shr 16 and 0xFF
-                    val b = frame.color shr 8 and 0xFF
-                    val a = 0xFF - frame.color and 0xFF
-
-                    val txt = GlUtil.createTexture(bitmap)
-                    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, txt)
-                    GlUtil.checkGlError()
-
-                    GLES20.glViewport(frame.x, texSize.height - bitmap.height - frame.y, bitmap.width, bitmap.height)
-                    GLES20.glUniform4f(glProgram.getUniformLocation("u_Color"), r / 255f, g / 255f, b / 255f, a / 255f)
-
-                    GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-                    GlUtil.checkGlError()
-
-                    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
-                    GlUtil.deleteTexture(txt)
-                }
-            }
-            GLES20.glUseProgram(preProgram[0])
-        }
-
-        // restore params
-        GLES20.glViewport(preViewPort[0], preViewPort[1], preViewPort[2], preViewPort[3])
-        GLES20.glActiveTexture(preTex[0])
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, preFbo[0])
-        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, preAlign[0])
-
-        return texId
+        return this.texId
     }
 
     override fun getTextureSize(presentationTimeUs: Long): Size {
-        return texSize
+        if (texId == null) {
+            return Size.ZERO
+        }
+        return Size(executor.render.width, executor.render.height)
     }
 
     override fun configure(videoSize: Size) {

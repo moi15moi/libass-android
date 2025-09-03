@@ -24,7 +24,7 @@ class AssTask(private val render: AssRender) : Runnable {
         executorBusy = true
         var result: AssFrame? = null
         try {
-            result = render.renderFrame(presentationTimeUs / 1000, true)
+            //result = render.renderFrame(presentationTimeUs / 1000, true)
             lastFrame = result
         } catch (e: Exception) {
             result = null

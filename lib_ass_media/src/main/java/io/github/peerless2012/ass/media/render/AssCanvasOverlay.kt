@@ -37,7 +37,8 @@ class AssCanvasOverlay(private val handler: AssHandler, private val render: AssR
         } else {
             presentationTimeUs
         }
-        val assFrame: AssFrame? = executor.renderFrame(timeUs)
+        //val assFrame: AssFrame? = executor.renderFrame(timeUs)
+        val assFrame: AssFrame? = null
 
         if (assFrame != null && assFrame.changed == 0) {
             return

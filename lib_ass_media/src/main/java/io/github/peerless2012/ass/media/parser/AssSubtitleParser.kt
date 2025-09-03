@@ -47,7 +47,7 @@ abstract class AssSubtitleParser(
 
             val cues = mutableListOf<Cue>()
             val frames = assHandler.render?.renderFrame(event.start + fadeIn, false)
-            frames?.images?.let { texts ->
+            /*frames?.images?.let { texts ->
                 texts.forEach { tex ->
                     tex.bitmap?.let { bitmap ->
                         val cue = Cue.Builder()
@@ -66,7 +66,7 @@ abstract class AssSubtitleParser(
                 val cwt = CuesWithTiming(cues, (event.start + fadeIn) * 1000
                     , (event.duration - fadeIn - fadeOut) * 1000)
                 output.accept(cwt)
-            }
+            }*/
         }
         if (segment) {
             track.clearEvent()

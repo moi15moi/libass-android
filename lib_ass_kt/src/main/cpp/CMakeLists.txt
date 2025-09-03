@@ -56,4 +56,6 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
         android
         jnigraphics
         z
-        log)
+        log
+        EGL
+        GLESv3)

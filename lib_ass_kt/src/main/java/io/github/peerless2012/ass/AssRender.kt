@@ -1,5 +1,6 @@
 package io.github.peerless2012.ass
 
+
 /**
  * @Author peerless2012
  * @Email peerless2012@126.com
@@ -8,6 +9,8 @@ package io.github.peerless2012.ass
  * @Description
  */
 class AssRender(nativeAss: Long) {
+    public var height: Int = 0
+    public var width: Int = 0
 
     companion object {
 
@@ -27,7 +30,7 @@ class AssRender(nativeAss: Long) {
         external fun nativeAssRenderSetFrameSize(render: Long, width: Int, height: Int)
 
         @JvmStatic
-        external fun nativeAssRenderFrame(render: Long, track: Long, time: Long, onlyAlpha: Boolean): AssFrame?
+        external fun nativeAssRenderFrame(render: Long, track: Long, time: Long, onlyAlpha: Boolean, width: Int, height: Int): Integer?
 
         @JvmStatic
         external fun nativeAssRenderDeinit(render: Long)
@@ -54,11 +57,13 @@ class AssRender(nativeAss: Long) {
     }
 
     public fun setFrameSize(width: Int, height: Int) {
+        this.width = width
+        this.height = height
         nativeAssRenderSetFrameSize(nativeRender, width, height)
     }
 
-    public fun renderFrame(time: Long, onlyAlpha: Boolean): AssFrame? {
-        return track?.let { nativeAssRenderFrame(nativeRender, it.nativeAssTrack, time, onlyAlpha) }
+    public fun renderFrame(time: Long, onlyAlpha: Boolean): Integer? {
+        return track?.let { nativeAssRenderFrame(nativeRender, it.nativeAssTrack, time, onlyAlpha, this.width, this.height) }
     }
 
     protected fun finalize() {

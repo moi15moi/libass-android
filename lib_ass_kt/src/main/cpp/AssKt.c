@@ -15,6 +15,8 @@
 #include "libplacebo/log.h"
 #include "libplacebo/renderer.h"
 #include "libplacebo/opengl.h"
+#include "libplacebo/utils/upload.h"
+
 #define LOG_TAG "SubtitleRenderer"
 
 void assMessageCallback(int level, const char *fmt, va_list args, void *data) {
@@ -278,7 +280,20 @@ static int count_ass_images(ASS_Image *images) {
     return count;
 }
 
-jobject nativeAssRenderFrame(JNIEnv* env, jclass clazz, jlong render, jlong track, jlong time, jboolean onlyAlpha) {
+static void log_cb(void *priv, enum pl_log_level level, const char *msg)
+{
+    __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "%s", msg);
+}
+
+void checkGLError(const char* context) {
+    GLenum err;
+    while ((err = glGetError()) != GL_NO_ERROR) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "OpenGL error at %s: 0x%04x", context, err);
+    }
+}
+
+
+jobject nativeAssRenderFrame(JNIEnv* env, jclass clazz, jlong render, jlong track, jlong time, jboolean onlyAlpha, jint width, jint height) {
 
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC, &start);
@@ -295,13 +310,19 @@ jobject nativeAssRenderFrame(JNIEnv* env, jclass clazz, jlong render, jlong trac
     if (image == NULL) {
         return NULL;
     }
-   /* pl_log pllog = pl_log_create(PL_API_VER, pl_log_params(
-            .log_cb = pl_log_color,
-            .log_level = PL_LOG_INFO,
-    ));
 
+    EGLDisplay display = eglGetCurrentDisplay();
+    EGLContext context = eglGetCurrentContext();
+    if (display == EGL_NO_DISPLAY || context == EGL_NO_CONTEXT) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Failed to eglGetCurrentDisplay or eglGetCurrentContext");
+        return NULL;
+    }
 
-    // 2. Create OpenGL backend
+    pl_log pllog = pl_log_create(PL_API_VER, &(struct pl_log_params) {
+            .log_cb     = log_cb,
+            .log_level   = PL_LOG_DEBUG,
+    });
+
     struct pl_opengl_params gl_params = {
             .get_proc_addr = (void*)eglGetProcAddress,
             .allow_software     = true,         // allow software rasterers
@@ -313,150 +334,151 @@ jobject nativeAssRenderFrame(JNIEnv* env, jclass clazz, jlong render, jlong trac
         return NULL;
     }
 
-    // 3. Create libplacebo renderer
     pl_renderer renderer = pl_renderer_create(pllog, plgl->gpu);
     if (!renderer) {
-        fprintf(stderr, "Failed to create renderer\n");
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Failed to create renderer");
         pl_opengl_destroy(&plgl);
         return NULL;
     }
 
-    pl_fmt format = pl_find_named_fmt(plgl->gpu, "bgra8");
+    pl_fmt format = pl_find_named_fmt(plgl->gpu, "r8");
     if (!format) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Format not found");
         return NULL;
     }
 
-    // 4. Create output pl_tex (render target)
     struct pl_tex_params out_params = {
-            .w = 640,
-            .h = 480,
+            .w = image->w,
+            .h = image->h,
             .format = format,
-            .sampleable = true,
-            .storable = true,
             .renderable = true,
+            .host_readable = true,
+            .host_writable = true,
+            .blit_dst = true,
+            .sampleable = true,
     };
-    pl_tex out_tex = pl_tex_create(plgl->gpu, &out_params);
-    if (!out_tex) {
-        fprintf(stderr, "Failed to create output texture\n");
+    pl_tex src_tex = pl_tex_create(plgl->gpu, &out_params);
+    if (!src_tex) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Failed to create output texture");
         pl_renderer_destroy(&renderer);
         pl_opengl_destroy(&plgl);
         return NULL;
     }
 
-    // 5. Upload overlay textures (2 overlays)
-    struct pl_tex *overlays[2];
-    overlays[0] = pl_upload_plane(ctx, plgl->gpu, &(struct pl_plane_data) {
-            .pixels = overlay1,
-            .type = PL_FMT_UNORM8,
-            .width = 2,
-            .height = 1,
-            .stride_w = 8,
-            .components = 4
+    // TODO Utiliser posix_memalign
+    bool is_ok = pl_tex_upload(plgl->gpu, &(struct pl_tex_transfer_params) {
+            .tex        = src_tex,
+            .rc         = { .x1 = image->w, .y1 = image->h, },
+            .row_pitch  = image->stride,
+            .ptr        = image->bitmap,
     });
-    overlays[1] = pl_upload_plane(ctx, plgl->gpu, &(struct pl_plane_data) {
-            .pixels = overlay2,
-            .type = PL_FMT_UNORM8,
-            .width = 2,
-            .height = 1,
-            .stride_w = 8,
-            .components = 4
-    });
-
-    if (!overlays[0] || !overlays[1]) {
-        fprintf(stderr, "Failed to upload overlays\n");
-        if (overlays[0]) pl_tex_destroy(&overlays[0]);
-        if (overlays[1]) pl_tex_destroy(&overlays[1]);
-        pl_tex_destroy(&out_tex);
+    if (!is_ok) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Failed to pl_tex_upload");
         pl_renderer_destroy(&renderer);
         pl_opengl_destroy(&plgl);
-        pl_context_destroy(&ctx);
+        pl_tex_destroy(plgl->gpu, &src_tex);
         return NULL;
     }
 
-    // 6. Prepare overlay parts & overlay descriptors
-    struct pl_overlay_part parts[2];
-    struct pl_overlay overlay_desc[2];
-    for (int i = 0; i < 2; i++) {
-        parts[i] = (struct pl_overlay_part) {
-                .src = {0, 0, overlays[i]->params.w, overlays[i]->params.h},
-                .dst = {i * 100, i * 50, 200, 100},  // example placement
-        };
-        overlay_desc[i] = (struct pl_overlay) {
-                .tex = overlays[i],
-                .mode = PL_OVERLAY_NORMAL,
-                .repr = pl_find_repr(ctx, PL_COLOR_SYSTEM_RGB, PL_COLOR_LEVELS_PC),
-                .color = pl_color_space_srgb,
-                .coords = PL_OVERLAY_COORDS_DST_FRAME,
-                .parts = &parts[i],
-                .num_parts = 1,
-        };
+    struct pl_overlay_part part = {
+            .src = { image->dst_x, image->dst_y, image->dst_x + image->w, image->dst_y + image->h },
+            .dst = { image->dst_x, image->dst_y, image->dst_x + image->w, image->dst_y + image->h },
+            .color = {
+                    (image->color >> 24) / 255.0f,
+                    ((image->color >> 16) & 0xFF) / 255.0f,
+                    ((image->color >> 8) & 0xFF) / 255.0f,
+                    (255 - (image->color & 0xFF)) / 255.0f,
+            }
+    };
+
+    struct pl_overlay overlayl = {
+            .tex = src_tex,
+            .parts = &part,
+            .mode = PL_OVERLAY_MONOCHROME,
+            .num_parts = 1,
+            .color = {
+                    .primaries = PL_COLOR_PRIM_BT_709,
+                    .transfer = PL_COLOR_TRC_SRGB,
+            },
+            .repr.alpha = PL_ALPHA_INDEPENDENT
+    };
+
+
+    pl_fmt format_rgba = pl_find_named_fmt(plgl->gpu, "rgba8");
+    if (!format_rgba) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Format not found");
+        return NULL;
     }
 
-    // 7. Prepare target frame
-    struct pl_frame target = {0};
-    // Associate the output texture with target frame for rendering
-    // (Placing the texture as render target is implicit in pl_render_image)
-    target.tex = out_tex;
+    struct pl_tex_params dst_params = {
+            .w = width,
+            .h = height,
+            .format = format_rgba,
+            .renderable = true,
+            .host_readable = true,
+            .host_writable = true,
+            .blit_dst = true,
+            .sampleable = true,
+    };
+    pl_tex dst_tex = pl_tex_create(plgl->gpu, &dst_params);
+    if (!dst_tex) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Failed to create output texture");
+        pl_renderer_destroy(&renderer);
+        pl_opengl_destroy(&plgl);
+        return NULL;
+    }
 
-    target.overlays = overlay_desc;
-    target.num_overlays = 2;
+    /*GLint preFbo, preTex;
+    GLint preViewPort[4];
 
-    // 8. Render overlays (no base frame, just overlays)
-    pl_render_image(renderer, NULL, &target, &pl_render_default_params);
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &preFbo);
+    checkGLError("glGetIntegerv");
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &preTex);
+    checkGLError("glGetIntegerv");
+    glGetIntegerv(GL_VIEWPORT, preViewPort);
+    checkGLError("glGetIntegerv");*/
 
-    // 9. Extract OpenGL texture ID from out_tex
     unsigned int target_type, iformat, fbo;
-    GLuint tex_id = pl_opengl_unwrap(plgl->gpu, out_tex, &target_type, (int *)&iformat, &fbo);
-    printf("Libplacebo output GL texture ID: %u\n", tex_id);
+    GLuint tex_id = pl_opengl_unwrap(plgl->gpu, dst_tex, &target_type, (int *)&iformat, &fbo);
 
-    // Here you can pass tex_id to Media3 TextureOverlay for rendering.
+    __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Libplacebo output GL texture ID: %u", tex_id);
 
-    // 10. Cleanup
-    for (int i = 0; i < 2; i++)
-        pl_tex_destroy(&overlays[i]);
-    pl_tex_destroy(&out_tex);
-    pl_renderer_destroy(&renderer);
-    pl_opengl_destroy(&plgl);
-    pl_context_destroy(&ctx);*/
-
-
-
-    jclass assFrameClass = (*env)->FindClass(env, "io/github/peerless2012/ass/AssFrame");
-    jmethodID assFrameConstructor = (*env)->GetMethodID(env, assFrameClass, "<init>", "([Lio/github/peerless2012/ass/AssTex;I)V");
-
-    if (changed == 0) {
-        jobject res = (*env)->NewObject(env, assFrameClass, assFrameConstructor, NULL, changed);
-        return res;
-    }
-
-    int size = count_ass_images(image);
-    jclass assTexClass = (*env)->FindClass(env, "io/github/peerless2012/ass/AssTex");
-    jmethodID assTexConstructor = (*env)->GetMethodID(env, assTexClass, "<init>", "(IIILandroid/graphics/Bitmap;)V");
-
-    jobjectArray assTexArr = (*env)->NewObjectArray(env, size, assTexClass, NULL);
-    if (assTexArr == NULL) {
+    struct pl_frame target = {
+            .repr = pl_color_repr_rgb,
+            .num_planes = 1,
+            .planes[0] = {
+                    .texture = dst_tex,
+                    .components = 4,
+                    .component_mapping = {0, 1, 2, 3},
+            },
+            .overlays = &overlayl,
+            .num_overlays = 1,
+    };
+    is_ok = pl_render_image(renderer, NULL, &target, &pl_render_default_params);
+    if (!is_ok) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Failed to pl_render_image");
+        pl_renderer_destroy(&renderer);
+        pl_opengl_destroy(&plgl);
+        pl_tex_destroy(plgl->gpu, &src_tex);
         return NULL;
     }
 
-    int index = 0;
-    for (ASS_Image *img = image; img != NULL; img = img->next) {
-        jobject bitmap = NULL;
-        if (img->w > 0 && img->h > 0) {
-            bitmap = onlyAlpha ? createAlphaBitmap(env, img) : createBitmap(env, img);
-        }
-        int32_t color = (int32_t) img->color;
+    //pl_renderer_destroy(&renderer);
+    //pl_tex_destroy(plgl->gpu, &src_tex);
+    //pl_opengl_destroy(&plgl);
 
-        jobject assTexObject = (*env)->NewObject(env, assTexClass, assTexConstructor, img->dst_x, img->dst_y, color, bitmap);
+    //glBindFramebuffer(GL_FRAMEBUFFER,fbo);
 
-        (*env)->SetObjectArrayElement(env, assTexArr, index, assTexObject);
-        (*env)->DeleteLocalRef(env, assTexObject);
-        if (bitmap != NULL) {
-            (*env)->DeleteLocalRef(env, bitmap);
-        }
-        index++;
-    }
+    /*glViewport(preViewPort[0], preViewPort[1], preViewPort[2], preViewPort[3]);
+    checkGLError("glViewport");
+    glActiveTexture(preTex);
+    checkGLError("glActiveTexture");
+    glBindFramebuffer(GL_FRAMEBUFFER, preFbo);
+    checkGLError("glBindFramebuffer");*/
 
-    return (*env)->NewObject(env, assFrameClass, assFrameConstructor, assTexArr, changed);
+    jclass integerClass = (*env)->FindClass(env, "java/lang/Integer");
+    jmethodID constructor = (*env)->GetMethodID(env, integerClass, "<init>", "(I)V");
+    return (*env)->NewObject(env, integerClass, constructor, (jint) tex_id);
 }
 
 void nativeAssRenderDeinit(JNIEnv* env, jclass clazz, jlong render) {
@@ -471,7 +493,7 @@ static JNINativeMethod renderMethodTable[] = {
         {"nativeAssRenderSetCacheLimit", "(JII)V", (void*)nativeAssRenderSetCacheLimit},
         {"nativeAssRenderSetStorageSize", "(JII)V", (void*) nativeAssRenderSetStorageSize},
         {"nativeAssRenderSetFrameSize", "(JII)V", (void*)nativeAssRenderSetFrameSize},
-        {"nativeAssRenderFrame", "(JJJZ)Lio/github/peerless2012/ass/AssFrame;", (void*) nativeAssRenderFrame},
+        {"nativeAssRenderFrame", "(JJJZII)Ljava/lang/Integer;", (void*) nativeAssRenderFrame},
         {"nativeAssRenderDeinit", "(J)V", (void*)nativeAssRenderDeinit},
 };
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
