@@ -23,8 +23,8 @@ class AssExecutor(public val render: AssRender) {
 
     private val task = AssTask(render)
 
-    public fun renderFrame(presentationTimeUs: Long): Integer? {
-        return render.renderFrame(presentationTimeUs / 1000, true)
+    public fun renderFrame(context: Long, presentationTimeUs: Long): Integer? {
+        return render.renderFrame(context, presentationTimeUs / 1000, true)
         /*var assFrame: AssFrame? = null
         if (executorBusy) {
             // render thread is busy, keep last content

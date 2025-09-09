@@ -282,7 +282,7 @@ static int count_ass_images(ASS_Image *images) {
 
 static void log_cb(void *priv, enum pl_log_level level, const char *msg)
 {
-    __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "%s", msg);
+    __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "placebo - %s", msg);
 }
 
 void checkGLError(const char* context) {
@@ -293,29 +293,21 @@ void checkGLError(const char* context) {
 }
 
 
-jobject nativeAssRenderFrame(JNIEnv* env, jclass clazz, jlong render, jlong track, jlong time, jboolean onlyAlpha, jint width, jint height) {
+typedef struct libplacebo_context {
+    pl_log pllog;
+    pl_opengl plgl;
+    pl_renderer renderer;
+    pl_fmt format_r8;
+    pl_fmt format_rgba8;
+} LibplaceboContext;
 
-    struct timespec start, end;
-    clock_gettime(CLOCK_MONOTONIC, &start);
 
-    int changed;
-    ASS_Image *image = ass_render_frame((ASS_Renderer *) render, (ASS_Track *) track, time, &changed);
-    clock_gettime(CLOCK_MONOTONIC, &end);
-
-    double elapsed_ms = (end.tv_sec - start.tv_sec) * 1000.0 +
-                        (end.tv_nsec - start.tv_nsec) / 1000000.0;
-
-    __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "ass_render_frame took %.3f ms", elapsed_ms);
-
-    if (image == NULL) {
-        return NULL;
-    }
-
+jlong nativeInitializeLibplacebo(JNIEnv* env, jclass clazz) {
     EGLDisplay display = eglGetCurrentDisplay();
     EGLContext context = eglGetCurrentContext();
     if (display == EGL_NO_DISPLAY || context == EGL_NO_CONTEXT) {
         __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Failed to eglGetCurrentDisplay or eglGetCurrentContext");
-        return NULL;
+        return 0;
     }
 
     pl_log pllog = pl_log_create(PL_API_VER, &(struct pl_log_params) {
@@ -331,42 +323,107 @@ jobject nativeAssRenderFrame(JNIEnv* env, jclass clazz, jlong render, jlong trac
     pl_opengl plgl = pl_opengl_create(pllog, &gl_params);
     if (!plgl) {
         __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Failed to create pl_opengl");
-        return NULL;
+        return 0;
     }
 
     pl_renderer renderer = pl_renderer_create(pllog, plgl->gpu);
     if (!renderer) {
         __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Failed to create renderer");
         pl_opengl_destroy(&plgl);
-        return NULL;
+        return 0;
     }
 
-    pl_fmt format = pl_find_named_fmt(plgl->gpu, "r8");
-    if (!format) {
-        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Format not found");
+    pl_fmt format_r8 = pl_find_named_fmt(plgl->gpu, "r8");
+    if (!format_r8) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Format r8 not found");
+        return 0;
+    }
+
+    pl_fmt format_rgba8 = pl_find_named_fmt(plgl->gpu, "rgba8");
+    if (!format_rgba8) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Format rgba8 not found");
+        return 0;
+    }
+
+
+    LibplaceboContext* libplaceboContext = (LibplaceboContext*)malloc(sizeof(LibplaceboContext));
+    if (!libplaceboContext) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Failed to allocate LibplaceboContext");
+        return 0;
+    }
+
+    libplaceboContext->pllog = pllog;
+    libplaceboContext->plgl = plgl;
+    libplaceboContext->renderer = renderer;
+    libplaceboContext->format_r8 = format_r8;
+    libplaceboContext->format_rgba8 = format_rgba8;
+
+    // Return pointer casted to jlong
+    return (jlong)libplaceboContext;
+}
+
+void nativeUninitializeLibplacebo(JNIEnv* env, jclass clazz, jlong ctxPtr) {
+    if (!ctxPtr) return;
+
+    LibplaceboContext* ctx = (LibplaceboContext*)ctxPtr;
+
+    if (ctx->renderer) {
+        pl_renderer_destroy(&ctx->renderer);
+    }
+
+    if (ctx->plgl) {
+        pl_opengl_destroy(&ctx->plgl);
+    }
+
+    if (ctx->pllog) {
+        pl_log_destroy(&ctx->pllog);
+    }
+
+
+    free(ctx);
+}
+
+
+jobject nativeAssRenderFrame(JNIEnv* env, jclass clazz, jlong context, jlong render, jlong track, jlong time, jboolean onlyAlpha, jint width, jint height) {
+    if (!context) return NULL;
+
+    LibplaceboContext* ctx = (LibplaceboContext*)context;
+
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
+    int changed;
+    ASS_Image *image = ass_render_frame((ASS_Renderer *) render, (ASS_Track *) track, time, &changed);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    double elapsed_ms = (end.tv_sec - start.tv_sec) * 1000.0 +
+                        (end.tv_nsec - start.tv_nsec) / 1000000.0;
+
+    __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "ass_render_frame took %.3f ms", elapsed_ms);
+    __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "ass_render_frame resolution %ix%i", width, height);
+
+    if (image == NULL) {
         return NULL;
     }
 
     struct pl_tex_params out_params = {
             .w = image->w,
             .h = image->h,
-            .format = format,
+            .format = ctx->format_r8,
             .renderable = true,
             .host_readable = true,
             .host_writable = true,
             .blit_dst = true,
             .sampleable = true,
     };
-    pl_tex src_tex = pl_tex_create(plgl->gpu, &out_params);
+    pl_tex src_tex = pl_tex_create(ctx->plgl->gpu, &out_params);
     if (!src_tex) {
         __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Failed to create output texture");
-        pl_renderer_destroy(&renderer);
-        pl_opengl_destroy(&plgl);
         return NULL;
     }
 
     // TODO Utiliser posix_memalign
-    bool is_ok = pl_tex_upload(plgl->gpu, &(struct pl_tex_transfer_params) {
+    bool is_ok = pl_tex_upload(ctx->plgl->gpu, &(struct pl_tex_transfer_params) {
             .tex        = src_tex,
             .rc         = { .x1 = image->w, .y1 = image->h, },
             .row_pitch  = image->stride,
@@ -374,9 +431,7 @@ jobject nativeAssRenderFrame(JNIEnv* env, jclass clazz, jlong render, jlong trac
     });
     if (!is_ok) {
         __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Failed to pl_tex_upload");
-        pl_renderer_destroy(&renderer);
-        pl_opengl_destroy(&plgl);
-        pl_tex_destroy(plgl->gpu, &src_tex);
+        pl_tex_destroy(ctx->plgl->gpu, &src_tex);
         return NULL;
     }
 
@@ -400,46 +455,30 @@ jobject nativeAssRenderFrame(JNIEnv* env, jclass clazz, jlong render, jlong trac
                     .primaries = PL_COLOR_PRIM_BT_709,
                     .transfer = PL_COLOR_TRC_SRGB,
             },
-            .repr.alpha = PL_ALPHA_INDEPENDENT
+            .repr = {
+                    .alpha = PL_ALPHA_INDEPENDENT
+            }
     };
 
-
-    pl_fmt format_rgba = pl_find_named_fmt(plgl->gpu, "rgba8");
-    if (!format_rgba) {
-        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Format not found");
-        return NULL;
-    }
 
     struct pl_tex_params dst_params = {
             .w = width,
             .h = height,
-            .format = format_rgba,
+            .format = ctx->format_rgba8,
             .renderable = true,
             .host_readable = true,
             .host_writable = true,
             .blit_dst = true,
             .sampleable = true,
     };
-    pl_tex dst_tex = pl_tex_create(plgl->gpu, &dst_params);
+    pl_tex dst_tex = pl_tex_create(ctx->plgl->gpu, &dst_params);
     if (!dst_tex) {
         __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Failed to create output texture");
-        pl_renderer_destroy(&renderer);
-        pl_opengl_destroy(&plgl);
         return NULL;
     }
 
-    /*GLint preFbo, preTex;
-    GLint preViewPort[4];
-
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &preFbo);
-    checkGLError("glGetIntegerv");
-    glGetIntegerv(GL_ACTIVE_TEXTURE, &preTex);
-    checkGLError("glGetIntegerv");
-    glGetIntegerv(GL_VIEWPORT, preViewPort);
-    checkGLError("glGetIntegerv");*/
-
     unsigned int target_type, iformat, fbo;
-    GLuint tex_id = pl_opengl_unwrap(plgl->gpu, dst_tex, &target_type, (int *)&iformat, &fbo);
+    GLuint tex_id = pl_opengl_unwrap(ctx->plgl->gpu, dst_tex, &target_type, (int *)&iformat, &fbo);
 
     __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Libplacebo output GL texture ID: %u", tex_id);
 
@@ -454,27 +493,12 @@ jobject nativeAssRenderFrame(JNIEnv* env, jclass clazz, jlong render, jlong trac
             .overlays = &overlayl,
             .num_overlays = 1,
     };
-    is_ok = pl_render_image(renderer, NULL, &target, &pl_render_default_params);
+    is_ok = pl_render_image(ctx->renderer, NULL, &target, &pl_render_default_params);
     if (!is_ok) {
         __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "Failed to pl_render_image");
-        pl_renderer_destroy(&renderer);
-        pl_opengl_destroy(&plgl);
-        pl_tex_destroy(plgl->gpu, &src_tex);
+        pl_tex_destroy(ctx->plgl->gpu, &src_tex);
         return NULL;
     }
-
-    //pl_renderer_destroy(&renderer);
-    //pl_tex_destroy(plgl->gpu, &src_tex);
-    //pl_opengl_destroy(&plgl);
-
-    //glBindFramebuffer(GL_FRAMEBUFFER,fbo);
-
-    /*glViewport(preViewPort[0], preViewPort[1], preViewPort[2], preViewPort[3]);
-    checkGLError("glViewport");
-    glActiveTexture(preTex);
-    checkGLError("glActiveTexture");
-    glBindFramebuffer(GL_FRAMEBUFFER, preFbo);
-    checkGLError("glBindFramebuffer");*/
 
     jclass integerClass = (*env)->FindClass(env, "java/lang/Integer");
     jmethodID constructor = (*env)->GetMethodID(env, integerClass, "<init>", "(I)V");
@@ -493,8 +517,10 @@ static JNINativeMethod renderMethodTable[] = {
         {"nativeAssRenderSetCacheLimit", "(JII)V", (void*)nativeAssRenderSetCacheLimit},
         {"nativeAssRenderSetStorageSize", "(JII)V", (void*) nativeAssRenderSetStorageSize},
         {"nativeAssRenderSetFrameSize", "(JII)V", (void*)nativeAssRenderSetFrameSize},
-        {"nativeAssRenderFrame", "(JJJZII)Ljava/lang/Integer;", (void*) nativeAssRenderFrame},
+        {"nativeAssRenderFrame", "(JJJJZII)Ljava/lang/Integer;", (void*) nativeAssRenderFrame},
         {"nativeAssRenderDeinit", "(J)V", (void*)nativeAssRenderDeinit},
+        {"nativeInitializeLibplacebo", "()J", (void*)nativeInitializeLibplacebo},
+        {"nativeUninitializeLibplacebo", "(J)V", (void*)nativeUninitializeLibplacebo},
 };
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     JNIEnv *env = NULL;

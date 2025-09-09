@@ -30,10 +30,16 @@ class AssRender(nativeAss: Long) {
         external fun nativeAssRenderSetFrameSize(render: Long, width: Int, height: Int)
 
         @JvmStatic
-        external fun nativeAssRenderFrame(render: Long, track: Long, time: Long, onlyAlpha: Boolean, width: Int, height: Int): Integer?
+        external fun nativeAssRenderFrame(context: Long, render: Long, track: Long, time: Long, onlyAlpha: Boolean, width: Int, height: Int): Integer?
 
         @JvmStatic
         external fun nativeAssRenderDeinit(render: Long)
+
+        @JvmStatic
+        external fun nativeInitializeLibplacebo(): Long
+
+        @JvmStatic
+        external fun nativeUninitializeLibplacebo(context: Long)
     }
 
     private val nativeRender: Long = nativeAssRenderInit(nativeAss)
@@ -62,8 +68,16 @@ class AssRender(nativeAss: Long) {
         nativeAssRenderSetFrameSize(nativeRender, width, height)
     }
 
-    public fun renderFrame(time: Long, onlyAlpha: Boolean): Integer? {
-        return track?.let { nativeAssRenderFrame(nativeRender, it.nativeAssTrack, time, onlyAlpha, this.width, this.height) }
+    public fun renderFrame(context: Long, time: Long, onlyAlpha: Boolean): Integer? {
+        return track?.let { nativeAssRenderFrame(context, nativeRender, it.nativeAssTrack, time, onlyAlpha, this.width, this.height) }
+    }
+
+    public fun initializeLibplacebo(): Long {
+        return nativeInitializeLibplacebo()
+    }
+
+    public fun uninitializeLibplacebo(context: Long) {
+        nativeUninitializeLibplacebo(context)
     }
 
     protected fun finalize() {

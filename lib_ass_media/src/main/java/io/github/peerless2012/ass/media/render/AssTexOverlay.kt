@@ -19,6 +19,7 @@ class AssTexOverlay(private val handler: AssHandler, private val render: AssRend
     private var texId = 0
     private var defaultTexId = 0
     private var texSize = Size.ZERO
+    private var context: Long = 0
 
     private lateinit var executor: AssExecutor
 
@@ -30,7 +31,7 @@ class AssTexOverlay(private val handler: AssHandler, private val render: AssRend
         }
         render.setFrameSize(executor.render.width, executor.render.height)
 
-        val texId = executor.renderFrame(timeUs)
+        val texId = executor.renderFrame(context, timeUs)
 
         if (texId == null){
             this.texId = defaultTexId
@@ -55,10 +56,12 @@ class AssTexOverlay(private val handler: AssHandler, private val render: AssRend
         this.texSize = videoSize
         executor = AssExecutor(render)
         defaultTexId = GlUtil.createTexture(0, 0, false)
+        context = render.initializeLibplacebo()
     }
 
     override fun release() {
         executor.shutdown()
         super.release()
+        render.uninitializeLibplacebo(context)
     }
 }
