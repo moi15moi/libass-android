@@ -14,12 +14,6 @@ android {
     defaultConfig {
         minSdk = 21
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        consumerProguardFiles("consumer-rules.pro")
-        externalNativeBuild {
-            cmake {
-                arguments += listOf("-DANDROID_STL=c++_shared")
-            }
-        }
     }
 
     buildFeatures {
@@ -28,18 +22,9 @@ android {
 
     buildTypes {
         debug {
-            externalNativeBuild {
-                cmake {
-                    cppFlags("-fno-omit-frame-pointer")
-                }
-            }
         }
         release {
             isMinifyEnabled = false
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
         }
     }
 
@@ -61,7 +46,7 @@ android {
 
     prefab {
         create("ass") {
-            headers = "src/main/cpp/include"
+            headers = "src/main/cpp/build_native_lib/include"
         }
     }
 }

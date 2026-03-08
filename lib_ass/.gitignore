@@ -1,2 +1,4 @@
 /build
 /.cxx
+/src/main/cpp/build_native_lib
+/src/main/jniLibs
