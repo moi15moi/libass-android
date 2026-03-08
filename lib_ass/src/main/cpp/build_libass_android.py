@@ -125,6 +125,7 @@ class Project:
     build_system: BuildSystem
     additional_build_flags: list[str]
     additional_build_flags_for_abi: dict[Target, list[str]]
+    is_shared: bool
 
 
 @dataclass
@@ -140,11 +141,11 @@ class ToolchainEnvVar:
     RANLIB: str
     STRIP: str
     LDFLAGS: str
-    prefix: str
+    PKG_CONFIG_SYSROOT_DIR: str
     PKG_CONFIG_LIBDIR: str
 
 
-def create_meson_cross_file(target: Target, toolchain_env_var: ToolchainEnvVar, build_dir: Path) -> Path:
+def create_meson_cross_file(target: Target, toolchain_env_var: ToolchainEnvVar, build_dir: Path, project: Project) -> Path:
     """Generate a Meson cross-compilation file for Android cross-builds.
 
     Parameters:
@@ -155,14 +156,18 @@ def create_meson_cross_file(target: Target, toolchain_env_var: ToolchainEnvVar, 
     Returns:
         Path to the written Meson cross file.
     """
+    if project.is_shared:
+        default_library = "shared"
+    else:
+        default_library = "static"
+
     meson_cross_file_content = dedent(f"""
     [built-in options]
     buildtype = 'release'
-    default_library = 'shared'
+    default_library = '{default_library}'
     wrap_mode = 'nodownload'
     c_link_args = '{toolchain_env_var.LDFLAGS}'
     cpp_link_args = '{toolchain_env_var.LDFLAGS}'
-    prefix = '{toolchain_env_var.prefix}'
 
     [binaries]
     c = '{toolchain_env_var.CC}'
@@ -182,6 +187,7 @@ def create_meson_cross_file(target: Target, toolchain_env_var: ToolchainEnvVar, 
     endian = 'little'
 
     [properties]
+    sys_root = '{toolchain_env_var.PKG_CONFIG_SYSROOT_DIR}'
     pkg_config_libdir = '{toolchain_env_var.PKG_CONFIG_LIBDIR}'
     """)
 
@@ -211,8 +217,12 @@ def prepare_autotools_env(toolchain_env_var: ToolchainEnvVar) -> dict:
         "RANLIB": toolchain_env_var.RANLIB,
         "STRIP": toolchain_env_var.STRIP,
         "LDFLAGS": toolchain_env_var.LDFLAGS,
+        "PKG_CONFIG_SYSROOT_DIR": toolchain_env_var.PKG_CONFIG_SYSROOT_DIR,
         "PKG_CONFIG_LIBDIR": toolchain_env_var.PKG_CONFIG_LIBDIR,
+        "DESTDIR": toolchain_env_var.PKG_CONFIG_SYSROOT_DIR
     })
+
+    print(env)
 
     return env
 
@@ -290,7 +300,7 @@ def build_project(
     project_dir = project.project_download.download_and_extract(build_dir)
 
     if project.build_system == BuildSystem.MESON:
-        meson_cross_file = create_meson_cross_file(target, toolchain_env_var, build_dir)
+        meson_cross_file = create_meson_cross_file(target, toolchain_env_var, build_dir, project)
 
         subprocess.run(
             [
@@ -304,7 +314,7 @@ def build_project(
             encoding="utf-8"
         )
         subprocess.run(["meson", "compile", "-C", "build"], cwd=project_dir, check=True, encoding="utf-8")
-        subprocess.run(["meson", "install", "-C", "build"], cwd=project_dir, check=True, encoding="utf-8")
+        subprocess.run(["meson", "install", "-C", "build", "--destdir", toolchain_env_var.PKG_CONFIG_SYSROOT_DIR], cwd=project_dir, check=True, encoding="utf-8")
 
         shutil.rmtree(project_dir.joinpath("build"))
         meson_cross_file.unlink()
@@ -313,16 +323,18 @@ def build_project(
 
         if not project_dir.joinpath("configure").is_file():
             subprocess.run(["./autogen.sh"], cwd=project_dir, check=True, env=env_autotools, encoding="utf-8")
+        
+        if project.is_shared:
+            default_library = ["--enable-shared", "--disable-static"]
+        else:
+            default_library = ["--enable-static", "--disable-shared"]
 
         subprocess.run(
             [
                 "./configure",
                 f"--host={target.triple}",
-                "--enable-shared",
-                "--disable-static",
                 "--with-pic",
-                f"--prefix={toolchain_env_var.prefix}"
-            ] + project.additional_build_flags + project.additional_build_flags_for_abi.get(target, []),
+            ] + project.additional_build_flags + project.additional_build_flags_for_abi.get(target, []) + default_library,
             cwd=project_dir,
             check=True,
             env=env_autotools,
@@ -379,20 +391,20 @@ def main() -> None:
     target_x86_64 = Target("x86-64", "x86_64-linux-android", "x86_64", "x86_64")
 
     targets = [
-        target_arm,
+        #target_arm,
         target_aarch64,
-        target_x86,
-        target_x86_64
+        #target_x86,
+        #target_x86_64
     ]
 
     projects = [
-        Project("harfbuzz", ProjectDownloadTar("https://github.com/harfbuzz/harfbuzz/releases/download/11.3.3/harfbuzz-11.3.3.tar.xz"), BuildSystem.MESON, ["-Dtests=disabled", "-Ddocs=disabled", "-Dutilities=disabled"], {}),
-        Project("freetype", ProjectDownloadTar("https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.xz"), BuildSystem.AUTOTOOLS, ["--with-harfbuzz=yes", "--with-zlib=no"], {}),
-        Project("fribidi", ProjectDownloadTar("https://github.com/fribidi/fribidi/releases/download/v1.0.16/fribidi-1.0.16.tar.xz"), BuildSystem.MESON, ["-Ddocs=false", "-Dtests=false"], {}),
-        Project("unibreak", ProjectDownloadTar("https://github.com/adah1972/libunibreak/releases/download/libunibreak_6_1/libunibreak-6.1.tar.gz"), BuildSystem.AUTOTOOLS, [], {}),
-        Project("expat", ProjectDownloadTar("https://github.com/libexpat/libexpat/releases/download/R_2_7_1/expat-2.7.1.tar.xz"), BuildSystem.AUTOTOOLS, ["--without-tests", "--without-docbook"], {}),
-        Project("fontconfig", ProjectDownloadTar("https://www.freedesktop.org/software/fontconfig/release/fontconfig-2.16.0.tar.xz"), BuildSystem.MESON, ["-Dtests=disabled", "-Ddoc=disabled", "-Dtools=disabled", "-Dxml-backend=expat"], {}),
-        Project("ass", ProjectDownloadTar("https://github.com/libass/libass/releases/download/0.17.3/libass-0.17.3.tar.xz"), BuildSystem.AUTOTOOLS, ["--enable-fontconfig", "--enable-libunibreak"], {target_aarch64: ["--enable-asm"], target_x86: ["--enable-asm"], target_x86_64: ["--enable-asm"]}),
+        Project("harfbuzz", ProjectDownloadTar("https://github.com/harfbuzz/harfbuzz/releases/download/11.3.3/harfbuzz-11.3.3.tar.xz"), BuildSystem.MESON, ["-Dtests=disabled", "-Ddocs=disabled", "-Dutilities=disabled"], {}, False),
+        Project("freetype", ProjectDownloadTar("https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.xz"), BuildSystem.AUTOTOOLS, ["--with-harfbuzz=yes", "--with-zlib=no"], {}, False),
+        Project("fribidi", ProjectDownloadTar("https://github.com/fribidi/fribidi/releases/download/v1.0.16/fribidi-1.0.16.tar.xz"), BuildSystem.MESON, ["-Ddocs=false", "-Dtests=false"], {}, False),
+        Project("unibreak", ProjectDownloadTar("https://github.com/adah1972/libunibreak/releases/download/libunibreak_6_1/libunibreak-6.1.tar.gz"), BuildSystem.AUTOTOOLS, [], {}, False),
+        Project("expat", ProjectDownloadTar("https://github.com/libexpat/libexpat/releases/download/R_2_7_1/expat-2.7.1.tar.xz"), BuildSystem.AUTOTOOLS, ["--without-tests", "--without-docbook"], {}, False),
+        Project("fontconfig", ProjectDownloadTar("https://www.freedesktop.org/software/fontconfig/release/fontconfig-2.16.0.tar.xz"), BuildSystem.MESON, ["-Dtests=disabled", "-Ddoc=disabled", "-Dtools=disabled", "-Dxml-backend=expat"], {}, False),
+        Project("ass", ProjectDownloadTar("https://github.com/libass/libass/releases/download/0.17.3/libass-0.17.3.tar.xz"), BuildSystem.AUTOTOOLS, ["--enable-fontconfig", "--enable-libunibreak"], {target_aarch64: ["--enable-asm"], target_x86: ["--enable-asm"], target_x86_64: ["--enable-asm"]}, True),
     ]
 
     for target in targets:
