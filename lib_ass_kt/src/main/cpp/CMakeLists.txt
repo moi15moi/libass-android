@@ -26,6 +26,7 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 # used in the AndroidManifest.xml file.
 add_library(${CMAKE_PROJECT_NAME} SHARED AssKt.c)
 # Add these two lines.
+# Add these two lines.
 find_package(lib_ass REQUIRED CONFIG)
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME "asskt")
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE

@@ -391,10 +391,10 @@ def main() -> None:
     target_x86_64 = Target("x86-64", "x86_64-linux-android", "x86_64", "x86_64")
 
     targets = [
-        #target_arm,
+        target_arm,
         target_aarch64,
-        #target_x86,
-        #target_x86_64
+        target_x86,
+        target_x86_64
     ]
 
     projects = [
