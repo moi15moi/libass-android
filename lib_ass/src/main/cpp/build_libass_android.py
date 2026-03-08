@@ -13,20 +13,32 @@ from urllib import request
 from urllib.parse import urlparse
 
 
-@dataclass
+@dataclass(frozen=True)
 class Target:
-    abi: str # From https://developer.android.com/ndk/guides/other_build_systems
-    triple: str # From https://developer.android.com/ndk/guides/other_build_systems
+    """Android ABI target and cross-compilation metadata.
+
+    Attributes:
+        abi: Android ABI name (e.g., "arm64-v8a", "armeabi-v7a"). From https://developer.android.com/ndk/guides/other_build_systems
+        triple: LLVM target triple (e.g., "aarch64-linux-android"). From https://developer.android.com/ndk/guides/other_build_systems
+        meson_cpu: Meson cpu value for host_machine.
+        meson_cpu_family: Meson cpu_family value for host_machine. From https://mesonbuild.com/Reference-tables.html#cpu-families
+    """
+
+    abi: str  
+    triple: str
     meson_cpu: str
-    meson_cpu_family: str # From https://mesonbuild.com/Reference-tables.html#cpu-families
+    meson_cpu_family: str
 
 
 class BuildSystem(Enum):
+    """Build system used by a project."""
+
     MESON = auto()
     AUTOTOOLS = auto()
 
 
 class ABCProjectDownload(ABC):
+    """Abstract base for downloading and extracting project sources."""
 
     @abstractmethod
     def download_and_extract(self, build_dir: Path) -> Path:
@@ -34,12 +46,23 @@ class ABCProjectDownload(ABC):
 
 
 class ProjectDownloadTar(ABCProjectDownload):
+    """Downloads a project from a URL and extracts it from a tarball (.tar.gz, .tar.xz, etc.)."""
 
     def __init__(self, download_url: str):
         self.download_url = download_url
 
     def download_and_extract(self, build_dir: Path) -> Path:
-        url_file_path = PurePosixPath(urlparse(self.download_url).path).name # Ex: libass-0.17.3.tar.xz
+        """Download the tarball and extract it to the build directory.
+
+        Parameters:
+            build_dir: Directory where the tarball will be downloaded and extracted.
+                The project root is created as a subdirectory based on the archive name
+                (e.g., libass-0.17.3.tar.xz becomes build_dir/libass-0.17.3).
+
+        Returns:
+            Path to the extracted project root directory.
+        """
+        url_file_path = PurePosixPath(urlparse(self.download_url).path).name  # Ex: libass-0.17.3.tar.xz
         url_file_name = url_file_path.rsplit(".", 2)[0] # Ex: libass-0.17.3
 
         project_dir = build_dir.joinpath(url_file_name)
@@ -57,6 +80,7 @@ class ProjectDownloadTar(ABCProjectDownload):
 
 
 class ProjectDownloadGit(ABCProjectDownload):
+    """Clones a project from a Git repository at a specific tag."""
 
     def __init__(self, git_repos_url: str, tag: str, recursive: bool):
         self.git_repos_url = git_repos_url
@@ -64,7 +88,17 @@ class ProjectDownloadGit(ABCProjectDownload):
         self.recursive = recursive
 
     def download_and_extract(self, build_dir: Path) -> Path:
-        project_file = PurePosixPath(urlparse(self.git_repos_url).path).name # Ex: libplacebo.git
+        """Clone the repository (if not already present) into the build directory.
+
+        Parameters:
+            build_dir: Directory where the repository will be cloned.
+                The project root is created as a subdirectory based on the repo name
+                (e.g., libplacebo.git becomes build_dir/libplacebo).
+
+        Returns:
+            Path to the cloned project root directory.
+        """
+        project_file = PurePosixPath(urlparse(self.git_repos_url).path).name  # Ex: libplacebo.git
         project_name = project_file.rsplit(".", 1)[0] # Ex: libass-0.17.3
 
         project_dir = build_dir.joinpath(project_name)
@@ -76,15 +110,27 @@ class ProjectDownloadGit(ABCProjectDownload):
 
 @dataclass
 class Project:
+    """Description of a dependency or project to build.
+
+    Attributes:
+        name: Project name (e.g., for lib path resolution).
+        project_download: Strategy to obtain sources (tar or git).
+        build_system: Build system used by the project.
+        additional_build_flags: Flags passed to configure/meson for all ABIs.
+        additional_build_flags_for_abi: Per-ABI flags (e.g., --enable-asm for x86_64).
+    """
+
     name: str
     project_download: ABCProjectDownload
     build_system: BuildSystem
     additional_build_flags: list[str]
-    additional_build_flags_for_abi: dict[Target, list[str]] # Key: ABI (ex: "arm64-v8a"). Value: List of flags for this ABI
+    additional_build_flags_for_abi: dict[Target, list[str]]
 
 
 @dataclass
 class ToolchainEnvVar:
+    """Variable for the NDK toolchain."""
+
     CC: str
     CXX: str
     AR: str
@@ -99,7 +145,16 @@ class ToolchainEnvVar:
 
 
 def create_meson_cross_file(target: Target, toolchain_env_var: ToolchainEnvVar, build_dir: Path) -> Path:
+    """Generate a Meson cross-compilation file for Android cross-builds.
 
+    Parameters:
+        target: Android ABI target (arm64-v8a, armeabi-v7a, x86, x86-64).
+        toolchain_env_var: NDK toolchain paths.
+        build_dir: Directory where the cross file is written.
+
+    Returns:
+        Path to the written Meson cross file.
+    """
     meson_cross_file_content = dedent(f"""
     [built-in options]
     buildtype = 'release'
@@ -137,6 +192,14 @@ def create_meson_cross_file(target: Target, toolchain_env_var: ToolchainEnvVar, 
 
 
 def prepare_autotools_env(toolchain_env_var: ToolchainEnvVar) -> dict:
+    """Build an environment dict with NDK toolchain variables for Autotools builds.
+
+    Parameters:
+        toolchain_env_var: NDK toolchain paths.
+
+    Returns:
+        A copy of the current environment with the toolchain variables set.
+    """
     env = os.environ.copy()
     env.update({
         "CC": toolchain_env_var.CC,
@@ -155,10 +218,22 @@ def prepare_autotools_env(toolchain_env_var: ToolchainEnvVar) -> dict:
 
 
 def get_toolchain_path(ndk_path: Path) -> Path:
+    """Resolve the NDK LLVM toolchain path for the current host OS.
+
+    Parameters:
+        ndk_path: Root path of the Android NDK installation.
+            (e.g., .../ndk/27.0.12077973)
+
+    Returns:
+        Path to the prebuilt LLVM toolchain (toolchains/llvm/prebuilt/{os}).
+        The OS variant is derived from the current platform:
+        windows-x86_64, linux-x86_64, or darwin-x86_64.
+    """
     system_name = system()
 
     # See NDK OS Variant in https://developer.android.com/ndk/guides/other_build_systems#overview
     if system_name == "Windows":
+        # We don't really support Windows cause autotools doesn't work on Windows.
         os = "windows-x86_64"
     elif system_name == "Linux":
         os = "linux-x86_64"
@@ -174,7 +249,25 @@ def get_toolchain_path(ndk_path: Path) -> Path:
     return toolchain_path
 
 
-def build_project(project: Project, target: Target, abi_version: int, toolchain_path: Path, build_dir: Path, jniLibs: Path):
+def build_project(
+    project: Project,
+    target: Target,
+    abi_version: int,
+    toolchain_path: Path,
+    build_dir: Path,
+    jniLibs: Path,
+) -> None:
+    """Download and build a project for the given ABI target.
+
+    Parameters:
+        project: Project to build.
+        target: Android ABI target (arm64-v8a, armeabi-v7a, x86, x86-64).
+        abi_version: Minimum API level, used in compiler names
+            (e.g., aarch64-linux-android33-clang).
+        toolchain_path: Path to the NDK LLVM toolchain bin directory.
+        build_dir: Root directory for builds.
+        jniLibs: Intended output path for JNI libraries.
+    """
     print(f"=== Building {project.name} for {target.abi} ===")
 
     target_dir = build_dir.joinpath(target.abi)
