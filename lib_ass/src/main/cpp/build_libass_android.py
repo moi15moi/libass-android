@@ -222,8 +222,6 @@ def prepare_autotools_env(toolchain_env_var: ToolchainEnvVar) -> dict:
         "DESTDIR": toolchain_env_var.PKG_CONFIG_SYSROOT_DIR
     })
 
-    print(env)
-
     return env
 
 
@@ -294,7 +292,7 @@ def build_project(
         str(toolchain_path.joinpath("bin", "llvm-strip")),
         "-Wl,-z,max-page-size=16384", # Android require 16 KB page sizes: https://developer.android.com/guide/practices/page-sizes
         str(target_dir),
-        str(target_dir.joinpath("lib", "pkgconfig"))
+        str(target_dir.joinpath("usr", "local", "lib", "pkgconfig"))
     )
 
     project_dir = project.project_download.download_and_extract(build_dir)
@@ -344,11 +342,13 @@ def build_project(
         subprocess.run(["make", "install"], cwd=project_dir, check=True, env=env_autotools, encoding="utf-8")
         subprocess.run(["make", "distclean"], cwd=project_dir, check=True, env=env_autotools, encoding="utf-8")
     
-    #lib_path = Path(toolchain_env_var.prefix).joinpath("lib", f"lib{project.name}.so")
-    #if not lib_path.is_file():
-    #    raise FileNotFoundError(f"The file \"{lib_path}\" doesn't exist.")
+    library_extension = "so" if project.is_shared else "a"
+    lib_path = Path(toolchain_env_var.PKG_CONFIG_SYSROOT_DIR).joinpath("usr", "local", "lib", f"lib{project.name}.{library_extension}")
+    if not lib_path.is_file():
+        raise FileNotFoundError(f"The file \"{lib_path}\" doesn't exist.")
 
-    #shutil.copy(lib_path, jniLibs)
+    return lib_path
+
 
 
 def main() -> None:
@@ -410,16 +410,18 @@ def main() -> None:
     for target in targets:
         jniLibs = python_file_dir.parent.parent.joinpath("jniLibs", target.abi)
 
-        #if jniLibs.is_dir():
-        #    shutil.rmtree(jniLibs)
-        #jniLibs.mkdir(parents=True)
+        if jniLibs.is_dir():
+            shutil.rmtree(jniLibs)
+        jniLibs.mkdir(parents=True)
 
         for project in projects:
-            build_project(project, target, abi_version, toolchain_path, build_dir, jniLibs)
+            lib_path = build_project(project, target, abi_version, toolchain_path, build_dir, jniLibs)
 
+            if project.name == "ass":
+                shutil.copy(lib_path, jniLibs)
 
-    #include_dir = build_dir.joinpath("include")
-    #shutil.copytree(build_dir.joinpath(targets[0].abi, "include"), include_dir)
+    include_dir = build_dir.joinpath("include")
+    shutil.copytree(build_dir.joinpath(targets[0].abi, "usr", "local", "include"), include_dir)
 
 
 if __name__ == "__main__":
