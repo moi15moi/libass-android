@@ -17,8 +17,8 @@ from urllib.parse import urlparse
 class Target:
     abi: str # From https://developer.android.com/ndk/guides/other_build_systems
     triple: str # From https://developer.android.com/ndk/guides/other_build_systems
-    cpu: str
-    cpu_family: str
+    meson_cpu: str
+    meson_cpu_family: str # From https://mesonbuild.com/Reference-tables.html#cpu-families
 
 
 class BuildSystem(Enum):
@@ -80,7 +80,7 @@ class Project:
     project_download: ABCProjectDownload
     build_system: BuildSystem
     additional_build_flags: list[str]
-    additional_build_flags_for_abi: dict[str, list[str]] # Key: ABI (ex: "arm64-v8a"). Value: List of flags
+    additional_build_flags_for_abi: dict[Target, list[str]] # Key: ABI (ex: "arm64-v8a"). Value: List of flags for this ABI
 
 
 @dataclass
@@ -93,10 +93,9 @@ class ToolchainEnvVar:
     NM: str
     RANLIB: str
     STRIP: str
-    YASM: str
     LDFLAGS: str
     prefix: str
-    PKG_CONFIG_PATH: str
+    PKG_CONFIG_LIBDIR: str
 
 
 def create_meson_cross_file(target: Target, toolchain_env_var: ToolchainEnvVar, build_dir: Path) -> Path:
@@ -109,7 +108,6 @@ def create_meson_cross_file(target: Target, toolchain_env_var: ToolchainEnvVar, 
     c_link_args = '{toolchain_env_var.LDFLAGS}'
     cpp_link_args = '{toolchain_env_var.LDFLAGS}'
     prefix = '{toolchain_env_var.prefix}'
-    pkg_config_path = '{toolchain_env_var.PKG_CONFIG_PATH}'
 
     [binaries]
     c = '{toolchain_env_var.CC}'
@@ -120,14 +118,16 @@ def create_meson_cross_file(target: Target, toolchain_env_var: ToolchainEnvVar, 
     nm = '{toolchain_env_var.NM}'
     ranlib = '{toolchain_env_var.RANLIB}'
     strip = '{toolchain_env_var.STRIP}'
-    yasm = '{toolchain_env_var.YASM}'
     pkg-config = 'pkg-config'
 
     [host_machine]
     system = 'android'
-    cpu_family = '{target.cpu_family}'
-    cpu = '{target.cpu}'
+    cpu_family = '{target.meson_cpu_family}'
+    cpu = '{target.meson_cpu}'
     endian = 'little'
+
+    [properties]
+    pkg_config_libdir = '{toolchain_env_var.PKG_CONFIG_LIBDIR}'
     """)
 
     meson_cross_file = build_dir.joinpath(f"{target.abi}.txt")
@@ -147,9 +147,8 @@ def prepare_autotools_env(toolchain_env_var: ToolchainEnvVar) -> dict:
         "NM": toolchain_env_var.NM,
         "RANLIB": toolchain_env_var.RANLIB,
         "STRIP": toolchain_env_var.STRIP,
-        "YASM": toolchain_env_var.YASM,
         "LDFLAGS": toolchain_env_var.LDFLAGS,
-        "PKG_CONFIG_PATH": toolchain_env_var.PKG_CONFIG_PATH,
+        "PKG_CONFIG_LIBDIR": toolchain_env_var.PKG_CONFIG_LIBDIR,
     })
 
     return env
@@ -161,10 +160,8 @@ def get_toolchain_path(ndk_path: Path) -> Path:
     # See NDK OS Variant in https://developer.android.com/ndk/guides/other_build_systems#overview
     if system_name == "Windows":
         os = "windows-x86_64"
-
     elif system_name == "Linux":
         os = "linux-x86_64"
-
     elif system_name == "Darwin":
         os = "darwin-x86_64"
     else:
@@ -192,34 +189,55 @@ def build_project(project: Project, target: Target, abi_version: int, toolchain_
         str(toolchain_path.joinpath("bin", "llvm-nm")),
         str(toolchain_path.joinpath("bin", "llvm-ranlib")),
         str(toolchain_path.joinpath("bin", "llvm-strip")),
-        str(toolchain_path.joinpath("bin", "yasm")),
         "-Wl,-z,max-page-size=16384", # Android require 16 KB page sizes: https://developer.android.com/guide/practices/page-sizes
         str(target_dir),
         str(target_dir.joinpath("lib", "pkgconfig"))
     )
 
-    env_autotools = prepare_autotools_env(toolchain_env_var)
     project_dir = project.project_download.download_and_extract(build_dir)
 
     if project.build_system == BuildSystem.MESON:
         meson_cross_file = create_meson_cross_file(target, toolchain_env_var, build_dir)
 
-        subprocess.run(["meson", "setup", "build", "--cross-file", str(meson_cross_file)] + project.additional_build_flags + project.additional_build_flags_for_abi.get(target.abi, []), cwd=project_dir, check=True)
-        subprocess.run(["ninja", "-C", "build"], cwd=project_dir, check=True)
-
-        subprocess.run(["ninja", "-C", "build", "install"], cwd=project_dir, check=True)
+        subprocess.run(
+            [
+                "meson",
+                "setup",
+                "build",
+                "--cross-file", str(meson_cross_file)
+            ] + project.additional_build_flags + project.additional_build_flags_for_abi.get(target, []),
+            cwd=project_dir,
+            check=True,
+            encoding="utf-8"
+        )
+        subprocess.run(["meson", "compile", "-C", "build"], cwd=project_dir, check=True, encoding="utf-8")
+        subprocess.run(["meson", "install", "-C", "build"], cwd=project_dir, check=True, encoding="utf-8")
 
         shutil.rmtree(project_dir.joinpath("build"))
         meson_cross_file.unlink()
     elif project.build_system == BuildSystem.AUTOTOOLS:
+        env_autotools = prepare_autotools_env(toolchain_env_var)
+
         if not project_dir.joinpath("configure").is_file():
-            subprocess.run(["./autogen.sh"], cwd=project_dir, check=True, env=env_autotools)
+            subprocess.run(["./autogen.sh"], cwd=project_dir, check=True, env=env_autotools, encoding="utf-8")
 
-        subprocess.run(["./configure", f"--host={target.triple}", "--enable-shared", "--disable-static", "--with-pic", f"--prefix={toolchain_env_var.prefix}"] + project.additional_build_flags + project.additional_build_flags_for_abi.get(target.abi, []), cwd=project_dir, check=True, env=env_autotools)
-        subprocess.run(["make"], cwd=project_dir, check=True, env=env_autotools)
-
-        subprocess.run(["make", "install"], cwd=project_dir, check=True, env=env_autotools)
-        subprocess.run(["make", "distclean"], cwd=project_dir, check=True, env=env_autotools)
+        subprocess.run(
+            [
+                "./configure",
+                f"--host={target.triple}",
+                "--enable-shared",
+                "--disable-static",
+                "--with-pic",
+                f"--prefix={toolchain_env_var.prefix}"
+            ] + project.additional_build_flags + project.additional_build_flags_for_abi.get(target, []),
+            cwd=project_dir,
+            check=True,
+            env=env_autotools,
+            encoding="utf-8"
+        )
+        subprocess.run(["make"], cwd=project_dir, check=True, env=env_autotools, encoding="utf-8")
+        subprocess.run(["make", "install"], cwd=project_dir, check=True, env=env_autotools, encoding="utf-8")
+        subprocess.run(["make", "distclean"], cwd=project_dir, check=True, env=env_autotools, encoding="utf-8")
     
     #lib_path = Path(toolchain_env_var.prefix).joinpath("lib", f"lib{project.name}.so")
     #if not lib_path.is_file():
@@ -262,11 +280,16 @@ def main() -> None:
         shutil.rmtree(build_dir)
     build_dir.mkdir()
 
+    target_arm = Target("armeabi-v7a", "armv7a-linux-androideabi", "armv7a", "arm")
+    target_aarch64 = Target("arm64-v8a", "aarch64-linux-android", "aarch64", "aarch64")
+    target_x86 = Target("x86", "i686-linux-android", "i686", "x86")
+    target_x86_64 = Target("x86-64", "x86_64-linux-android", "x86_64", "x86_64")
+
     targets = [
-        Target("armeabi-v7a", "armv7a-linux-androideabi", "armv7a", "arm"),
-        Target("arm64-v8a", "aarch64-linux-android", "aarch64", "aarch64"),
-        Target("x86", "i686-linux-android", "i686", "x86"),
-        Target("x86-64", "x86_64-linux-android", "x86_64", "x86_64"),
+        target_arm,
+        target_aarch64,
+        target_x86,
+        target_x86_64
     ]
 
     projects = [
@@ -276,18 +299,19 @@ def main() -> None:
         Project("unibreak", ProjectDownloadTar("https://github.com/adah1972/libunibreak/releases/download/libunibreak_6_1/libunibreak-6.1.tar.gz"), BuildSystem.AUTOTOOLS, [], {}),
         Project("expat", ProjectDownloadTar("https://github.com/libexpat/libexpat/releases/download/R_2_7_1/expat-2.7.1.tar.xz"), BuildSystem.AUTOTOOLS, ["--without-tests", "--without-docbook"], {}),
         Project("fontconfig", ProjectDownloadTar("https://www.freedesktop.org/software/fontconfig/release/fontconfig-2.16.0.tar.xz"), BuildSystem.MESON, ["-Dtests=disabled", "-Ddoc=disabled", "-Dtools=disabled", "-Dxml-backend=expat"], {}),
-        Project("ass", ProjectDownloadTar("https://github.com/libass/libass/releases/download/0.17.3/libass-0.17.3.tar.xz"), BuildSystem.AUTOTOOLS, ["--enable-fontconfig", "--enable-libunibreak"], {"arm64-v8a": ["--enable-asm"], "x86": ["--enable-asm"], "x86-64": ["--enable-asm"]}),
-        Project("placebo", ProjectDownloadGit("https://code.videolan.org/videolan/libplacebo.git", "v7.351.0", True), BuildSystem.MESON, ["-Dopengl=enabled", "-Ddemos=false"], {}),
+        Project("ass", ProjectDownloadTar("https://github.com/libass/libass/releases/download/0.17.3/libass-0.17.3.tar.xz"), BuildSystem.AUTOTOOLS, ["--enable-fontconfig", "--enable-libunibreak"], {target_aarch64: ["--enable-asm"], target_x86: ["--enable-asm"], target_x86_64: ["--enable-asm"]}),
     ]
 
     for target in targets:
         jniLibs = python_file_dir.parent.parent.joinpath("jniLibs", target.abi)
-        if jniLibs.is_dir():
-            shutil.rmtree(jniLibs)
-        jniLibs.mkdir(parents=True)
+
+        #if jniLibs.is_dir():
+        #    shutil.rmtree(jniLibs)
+        #jniLibs.mkdir(parents=True)
 
         for project in projects:
             build_project(project, target, abi_version, toolchain_path, build_dir, jniLibs)
+
 
     #include_dir = build_dir.joinpath("include")
     #shutil.copytree(build_dir.joinpath(targets[0].abi, "include"), include_dir)
