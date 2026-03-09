@@ -30,9 +30,9 @@ add_library(${CMAKE_PROJECT_NAME} SHARED AssKt.c)
 find_package(lib_ass REQUIRED CONFIG)
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME "asskt")
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
-        lib_ass::ass
         android
         jnigraphics
         GLESv2
         z
-        log)
+        log
+        lib_ass::ass)
