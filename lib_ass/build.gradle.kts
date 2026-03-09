@@ -22,6 +22,7 @@ android {
 
     buildTypes {
         debug {
+            isMinifyEnabled = false
         }
         release {
             isMinifyEnabled = false
@@ -38,14 +39,21 @@ android {
     }
 
     externalNativeBuild {
-        ndkBuild {
-            path = file("src/main/jni/Android.mk")
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
         }
     }
 
     prefab {
         create("ass") {
             headers = "src/main/cpp/build_native_lib/include"
+        }
+    }
+
+    packaging {
+        jniLibs {
+            keepDebugSymbols += "**/*.so"
         }
     }
 }

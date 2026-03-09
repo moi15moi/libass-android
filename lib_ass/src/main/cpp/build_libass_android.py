@@ -388,7 +388,7 @@ def main() -> None:
     target_arm = Target("armeabi-v7a", "armv7a-linux-androideabi", "armv7a", "arm")
     target_aarch64 = Target("arm64-v8a", "aarch64-linux-android", "aarch64", "aarch64")
     target_x86 = Target("x86", "i686-linux-android", "i686", "x86")
-    target_x86_64 = Target("x86-64", "x86_64-linux-android", "x86_64", "x86_64")
+    target_x86_64 = Target("x86_64", "x86_64-linux-android", "x86_64", "x86_64")
 
     targets = [
         target_arm,
