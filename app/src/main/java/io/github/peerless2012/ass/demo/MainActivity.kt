@@ -28,8 +28,7 @@ import io.github.peerless2012.ass.media.AssHandlerConfig
 
 class MainActivity : AppCompatActivity() {
 
-    private var url = "http://192.168.3.6:8080/files/c.mkv"
-
+    private var url = "asset:///t4xd9a.mkv"
     private lateinit var player: ExoPlayer
 
     private lateinit var playerView: PlayerView
@@ -51,8 +50,8 @@ class MainActivity : AppCompatActivity() {
         player = ExoPlayer.Builder(this)
             .buildWithAssSupport(
                 this,
-                AssRenderType.OVERLAY_OPEN_GL,
-                AssHandlerConfig(maxRenderPixels = 720*480),
+                AssRenderType.EFFECTS_ATLAS,
+                AssHandlerConfig(),
                 playerView.subtitleView
             )
         playerView.player = player
@@ -72,7 +71,7 @@ class MainActivity : AppCompatActivity() {
             .setId("130")
             .build()
         val zhConfig = MediaItem.SubtitleConfiguration
-            .Builder(Uri.parse("http://192.168.3.6:8080/files/f-zh.ass"))
+            .Builder(Uri.parse("asset:///test-subs-position.ass"))
             .setMimeType(MimeTypes.TEXT_SSA)
             .setLanguage("zh")
             .setLabel("External ass zh")
@@ -80,8 +79,8 @@ class MainActivity : AppCompatActivity() {
             .build()
         val mediaItem = MediaItem.Builder()
             .setUri(url)
-//            .setSubtitleConfigurations(ImmutableList.of(enConfig, jpConfig, zhConfig))
-        player.setMediaItem(mediaItem.build(), 30*1000)
+            .setSubtitleConfigurations(ImmutableList.of(zhConfig))
+        player.setMediaItem(mediaItem.build(), 0*1000)
         player.prepare()
     }
 

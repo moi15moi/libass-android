@@ -6,11 +6,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <jni.h>
 #include "ass/ass.h"
 #include "fontconfig/fontconfig.h"
 #include "GLES2/gl2.h"
 #include "GLES2/gl2ext.h"
+#include "AssBlend.h"
 
 #define LOG_TAG "SubtitleRenderer"
 
@@ -200,6 +200,7 @@ void nativeAssRenderSetFrameSize(JNIEnv* env, jclass clazz, jlong render, jint w
 void nativeAssRenderSetStorageSize(JNIEnv* env, jclass clazz, jlong render, jint width, jint height) {
     if (!render) return;
     ass_set_storage_size((ASS_Renderer *) render, width, height);
+    __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "ass_set_storage_size(%d, %d)", width, height);
 }
 
 jobject createBitmap(JNIEnv* env, const ASS_Image* image) {
@@ -369,6 +370,10 @@ static JNINativeMethod renderMethodTable[] = {
         {"nativeAssRenderSetFrameSize", "(JII)V", (void*)nativeAssRenderSetFrameSize},
         {"nativeAssRenderFrame", "(JJJI)Lio/github/peerless2012/ass/AssFrame;", (void*) nativeAssRenderFrame},
         {"nativeAssRenderDeinit", "(J)V", (void*)nativeAssRenderDeinit},
+        {"nativeAssBlendConfigure", "(JJIIILio/github/peerless2012/ass/AssRender;)J", (void*) nativeAssBlendConfigure},
+        {"nativeAssBlendDrawFrame", "(JJI)V", (void*) nativeAssBlendDrawFrame},
+        {"nativeAssBlendWorkerCompute", "(JJJJ)Z", (void*) nativeAssBlendWorkerCompute},
+        {"nativeAssBlendRelease", "(J)V", (void*) nativeAssBlendRelease},
 };
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     JNIEnv *env = NULL;
