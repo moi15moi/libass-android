@@ -103,7 +103,7 @@ class AssHandler(
     fun init(player: ExoPlayer) {
         player.addListener(this)
         handler = Handler(player.applicationLooper)
-        if (renderType == AssRenderType.EFFECTS_CANVAS || renderType == AssRenderType.EFFECTS_OPEN_GL || renderType == AssRenderType.EFFECTS_ATLAS) {
+        if (renderType == AssRenderType.EFFECTS_CANVAS || renderType == AssRenderType.EFFECTS_OPEN_GL || renderType == AssRenderType.EFFECTS_ATLAS || renderType == AssRenderType.EFFECTS_ATLAS_CPP) {
             overlayManager = AssOverlayManager(this, player, renderType)
         }
     }

@@ -39,37 +39,36 @@ Just like `EFFECTS_CANVAS`, but use OpenGL to render. and the offscreen tex is c
 Due to test, the `EFFECTS_OPEN_GL` will save 1/3 time when render.
 
 ### 4. EFFECTS_ATLAS
-The fastest render type. Uses media3's low-level `GlEffect`/`GlShaderProgram` API directly (not the
-`OverlayEffect`/`TextureOverlay` wrapper `EFFECTS_OPEN_GL` uses), and every part of the blending
-(libass render, atlas packing, atlas upload, video blit, subtitle draw) is done natively in a
-single JNI call per frame.
+The fastest render type. Implements media3's low-level `GlShaderProgram` interface directly (not
+the `BaseGlShaderProgram`/`OverlayEffect`/`TextureOverlay` wrappers the other render types use), and
+draws subtitles directly onto each decoded video frame's own texture, in place — no separate output
+texture, no full-frame video copy, and no GPU work at all on frames with no visible subtitle
+content. Every part of subtitle rendering (libass render, atlas packing/upload, the batched
+subtitle draw) is done natively in a single JNI call per frame.
 
 Instead of creating and destroying one GL texture per glyph piece every frame (what every other
-render type does today), glyph pieces are shelf-packed into a single persistent, reused GPU
-texture atlas. This reduces per-frame subtitle rendering to at most two draw calls: one full-frame
-video blit and one batched draw covering every currently visible glyph piece.
+render type does today), glyph pieces are shelf-packed into a single persistent, reused GPU texture
+atlas, reducing subtitle rendering to at most one batched draw call per frame.
 
-`ass_render_frame` runs on a dedicated native worker thread, not on the GL thread `drawFrame` is
-called on: the GL thread never calls into libass directly, it hands the worker the latest requested
-time and bounded-waits up to `AssHandlerConfig.blendWorkerWaitMs` (default 16ms) for that exact
-request to finish before uploading/drawing whatever atlas state was published. Frames that finish
-within the budget stay frame-accurate; a frame that doesn't falls back to stale content for that
-frame (logged as `TIMED OUT` under logcat tag `AssBlend`) rather than stalling video delivery.
-Real-world `ass_render_frame` cost varies a lot with content — profile with that log tag and tune
-`blendWorkerWaitMs` against your video's actual frame period; lower-frame-rate content has much more
-headroom to raise it for consistently frame-accurate subtitles.
+`ass_render_frame` runs synchronously, inline, on the GL thread — there is no worker thread. This is
+always, trivially frame-accurate (there is no "stale atlas" state that can exist), at the cost of
+being able to stall video delivery for as long as a pathologically slow/complex subtitle frame
+(heavy `\move`/`\t`/karaoke) takes to compute — the same tradeoff `OVERLAY_CANVAS`/`OVERLAY_OPEN_GL`
+already make today. Profile with logcat tag `AssOverlay` if you suspect a particular subtitle
+script is costing real per-frame time.
 
 Same HDR/DV limitation as `EFFECTS_OPEN_GL` (a plain 2D GL texture pipeline, no HDR color
 handling).
 
 Like the other `EFFECTS_*` types, subtitles are rasterized at the *video's own decode resolution*,
-not the display surface's — this GL stage's output must match its input (media3's effect pipeline
-reports this stage's output size to ExoPlayer as the new video size, which `PlayerView` uses to lay
-out its surface, so reporting anything other than the true video size here creates a feedback loop
-with the surface's own size). For low-resolution source video shown on a much higher-resolution
-display, subtitles will look softer than `OVERLAY_CANVAS`/`OVERLAY_OPEN_GL` (which render at surface
-resolution as a separate layer, independent of the video). Use `OVERLAY_CANVAS`/`OVERLAY_OPEN_GL`
-instead if surface-resolution-sharp subtitles matter more than `EFFECTS_ATLAS`'s blending speed.
+not the display surface's — drawing in place means the frame this draws into is always exactly the
+video's own decode size, so there's no separate "output size" to misreport (this sidesteps, by
+construction, an earlier `PlayerView`/`AspectRatioFrameLayout` feedback-loop bug: reporting a larger
+output size here fed into ExoPlayer's own `onVideoSizeChanged`, which visibly zoomed/distorted the
+video). For low-resolution source video shown on a much higher-resolution display, subtitles will
+look softer than `OVERLAY_CANVAS`/`OVERLAY_OPEN_GL` (which render at surface resolution as a
+separate layer, independent of the video). Use `OVERLAY_CANVAS`/`OVERLAY_OPEN_GL` instead if
+surface-resolution-sharp subtitles matter more than `EFFECTS_ATLAS`'s speed.
 
 ### 5. OVERLAY_CANVAS
 The ass/ssa subtitle will be cal at runtime, and add a `Overlay` widget in `SubtitleView` to render subtitle.
@@ -192,6 +191,6 @@ Actual render size: 1920 x 1080
 - **OVERLAY_OPEN_GL**: Renders at reduced size, scales `glViewport` coordinates to surface size
 - **OVERLAY_CANVAS**: Renders at reduced size, uses `drawBitmap` with scaled `RectF`
 - **EFFECTS_OPEN_GL**: Creates smaller FBO, uses `getVertexTransformation` to scale up in the OverlayEffect pipeline
-- **EFFECTS_ATLAS**: Renders at reduced size; subtitle quad clip-space coordinates are computed against the render size, then upscaled for free since the video blit already fills the full output size
+- **EFFECTS_ATLAS**: Renders at reduced size; subtitle quad clip-space coordinates are computed against the render size, then upscaled for free (clip-space math is resolution-independent) since it draws directly into the frame's own, already-full-size texture
 - **EFFECTS_CANVAS**: Renders at reduced size, scales canvas draw coordinates
 - **CUES**: Not affected (pre-renders all subtitles at parse time)

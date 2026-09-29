@@ -2,81 +2,136 @@ package io.github.peerless2012.ass.media.render
 
 import android.util.Log
 import androidx.annotation.OptIn
-import androidx.media3.common.util.Size
+import androidx.media3.common.C
+import androidx.media3.common.GlObjectsProvider
+import androidx.media3.common.GlTextureInfo
+import androidx.media3.common.VideoFrameProcessingException
+import androidx.media3.common.util.GlUtil
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.effect.BaseGlShaderProgram
+import androidx.media3.effect.GlShaderProgram
 import io.github.peerless2012.ass.AssRender
 import io.github.peerless2012.ass.media.AssHandler
+import java.util.concurrent.Executor
 
 /**
- * A [BaseGlShaderProgram] that blends ASS subtitles directly into the decoded video frame.
+ * Draws ASS subtitles directly onto each decoded video frame's own texture, in place, and forwards
+ * that same texture downstream unchanged — no separate output texture, no full-frame video copy,
+ * and no GPU work at all on frames with no visible subtitle content.
  *
- * Unlike [AssTexOverlay] (which implements the higher-level `TextureOverlay`/`OverlayEffect`
- * abstraction), this class talks to the raw `GlEffect`/`GlShaderProgram` API: media3 hands it the
- * input video texture and an already-bound, already-cleared output framebuffer, and it is
- * responsible for producing the *entire* output frame itself.
+ * Implements the raw [GlShaderProgram] interface directly rather than the higher-level
+ * `BaseGlShaderProgram` convenience wrapper (which [AssTexOverlay]'s `OverlayEffect`/
+ * `TextureOverlay` path builds on) specifically to get this in-place behavior:
+ * `BaseGlShaderProgram` always hands you a fresh, already-cleared *output* framebuffer you must
+ * fill completely, which would force a redundant full-frame blit of the video on every single
+ * frame just to reproduce it unchanged — an earlier version of this class did exactly that.
  *
- * All actual GL work (subtitle rendering, atlas packing/upload, the video blit, and the batched
- * subtitle draw) happens natively in a single call per frame — see [AssRender.drawGlBlendFrame]
- * and `AssBlend.c`'s `nativeAssBlendDrawFrame`. This class is intentionally just a thin shim
- * satisfying the [BaseGlShaderProgram] contract.
+ * All actual GL work (libass render, atlas packing/upload, the batched subtitle draw) happens
+ * natively in a single call per frame — see [AssRender.drawOverlayFrame] and `AssOverlay.c`'s
+ * `nativeAssOverlayDraw`. `ass_render_frame` runs synchronously, inline, on this call: always
+ * frame-accurate by construction, at the cost of being able to stall video delivery if a subtitle
+ * frame is pathologically slow to render (see `AssOverlay.c`'s file header comment for the full
+ * tradeoff against the worker-thread design this replaced).
  */
 @OptIn(UnstableApi::class)
 class AssGlShaderProgram(
     private val handler: AssHandler,
     private val render: AssRender
-) : BaseGlShaderProgram(/* useHighPrecisionColorComponents= */ false, /* texturePoolCapacity= */ 1) {
+) : GlShaderProgram {
 
-    override fun configure(inputWidth: Int, inputHeight: Int): Size {
-        // Output must match input (inputWidth x inputHeight, the video's own decode resolution), not
-        // some larger "sharper" size: this stage's returned Size becomes the GlEffect pipeline's
-        // reported output size, which flows into ExoPlayer's own onVideoSizeChanged (see
-        // PlaybackVideoGraphWrapper.onOutputSizeChanged -> DefaultVideoSink -> the public
-        // Player.Listener callback) - and PlayerView's AspectRatioFrameLayout uses THAT to lay out
-        // the surface, i.e. handler.surfaceSize. Rendering at surfaceSize and reporting surfaceSize
-        // back as the output size is a feedback loop: it visibly zooms/distorts the video, and
-        // surfaceSize may not even be aspect-correct yet the first time configure() runs (it can fire
-        // before AspectRatioFrameLayout has done its real, decoder-Format-driven layout pass). Subtitle
-        // sharpness here is therefore capped by the video's own decode resolution - use
-        // OVERLAY_CANVAS/OVERLAY_OPEN_GL instead if you need sharpness independent of video resolution
-        // (they render as a separate layer on top of the surface and never touch the reported video
-        // size at all).
-        val renderSize = handler.computeRenderSize(inputWidth, inputHeight)
+    private var inputListener: GlShaderProgram.InputListener = object : GlShaderProgram.InputListener {}
+    private var outputListener: GlShaderProgram.OutputListener = object : GlShaderProgram.OutputListener {}
+    private var errorListener = GlShaderProgram.ErrorListener {}
+    private var errorExecutor = Executor { it.run() }
 
-        // Storage size is the video's own decode dimensions: libass uses it to map the ASS script's
-        // PlayResX/PlayResY-relative coordinates onto pixels. Explicit here (not just relying on
-        // AssHandler's earlier call) so this function is correct standalone regardless of call
-        // ordering elsewhere.
-        render.setStorageSize(inputWidth, inputHeight)
-        render.setFrameSize(renderSize.width, renderSize.height)
-        render.configureGlBlend(renderSize.width, renderSize.height, handler.config.blendWorkerWaitMs)
-        return Size(inputWidth, inputHeight)
+    private var frameInFlight = false
+
+    /** Only populated when upstream doesn't already hand us an FBO for a given texture (fboId
+     * unset) — keyed by texId so a texture media3's pool reuses doesn't leak a new FBO every time. */
+    private val fallbackFbos = HashMap<Int, Int>()
+
+    override fun setInputListener(listener: GlShaderProgram.InputListener) {
+        inputListener = listener
+        if (!frameInFlight) listener.onReadyToAcceptInputFrame()
     }
 
-    override fun drawFrame(inputTexId: Int, presentationTimeUs: Long) {
-        // presentationTimeUs here is the exact, authoritative timestamp for the frame this call is
-        // compositing (handed to us synchronously by the same GlEffect pipeline call) - unlike
-        // handler.videoTime, which is set asynchronously from ExoPlayer's own polling loop and is
-        // not guaranteed to correspond to this specific frame.
-        val startNs = System.nanoTime()
-        render.drawGlBlendFrame(presentationTimeUs / 1000, inputTexId)
-        val elapsedMs = (System.nanoTime() - startNs) / 1_000_000
-        if (elapsedMs >= SLOW_FRAME_LOG_THRESHOLD_MS) {
-            Log.w(TAG, "drawGlBlendFrame took ${elapsedMs}ms for presentationTimeUs=$presentationTimeUs (see logcat tag AssBlend for native-side timing breakdown)")
+    override fun setOutputListener(listener: GlShaderProgram.OutputListener) {
+        outputListener = listener
+    }
+
+    override fun setErrorListener(executor: Executor, listener: GlShaderProgram.ErrorListener) {
+        errorExecutor = executor
+        errorListener = listener
+    }
+
+    override fun queueInputFrame(
+        glObjectsProvider: GlObjectsProvider,
+        inputTexture: GlTextureInfo,
+        presentationTimeUs: Long
+    ) {
+        try {
+            val fbo = if (inputTexture.fboId != C.INDEX_UNSET) {
+                inputTexture.fboId
+            } else {
+                fallbackFbos.getOrPut(inputTexture.texId) {
+                    GlUtil.createFboForTexture(inputTexture.texId)
+                }
+            }
+            // renderSize may be smaller than the actual frame (AssHandlerConfig.maxRenderPixels):
+            // libass rasterizes glyphs at renderSize, and the native side scales piece positions up
+            // to fill the actual frameWidth/frameHeight for free (clip-space math is resolution-
+            // independent) — same technique the earlier blit-based design used.
+            val renderSize = handler.computeRenderSize(inputTexture.width, inputTexture.height)
+            val startNs = System.nanoTime()
+            render.drawOverlayFrame(
+                fbo,
+                inputTexture.width,
+                inputTexture.height,
+                renderSize.width,
+                renderSize.height,
+                presentationTimeUs / 1000
+            )
+            val elapsedMs = (System.nanoTime() - startNs) / 1_000_000
+            if (elapsedMs >= SLOW_FRAME_LOG_THRESHOLD_MS) {
+                Log.w(TAG, "drawOverlayFrame took ${elapsedMs}ms for presentationTimeUs=$presentationTimeUs (see logcat tag AssOverlay for native-side timing breakdown)")
+            }
+        } catch (e: Exception) {
+            errorExecutor.execute {
+                errorListener.onError(VideoFrameProcessingException.from(e, presentationTimeUs))
+            }
         }
+        // Mark in-flight *before* forwarding: downstream may release the frame synchronously.
+        frameInFlight = true
+        outputListener.onOutputFrameAvailable(inputTexture, presentationTimeUs)
+    }
+
+    override fun releaseOutputFrame(outputTexture: GlTextureInfo) {
+        frameInFlight = false
+        inputListener.onInputFrameProcessed(outputTexture) // hand the texture back to its owner
+        inputListener.onReadyToAcceptInputFrame()
+    }
+
+    override fun signalEndOfCurrentInputStream() {
+        outputListener.onCurrentOutputStreamEnded()
+    }
+
+    override fun flush() {
+        frameInFlight = false // upstream reclaims its own textures on flush
+        inputListener.onFlush()
+        inputListener.onReadyToAcceptInputFrame()
     }
 
     override fun release() {
-        render.releaseGlBlend()
-        super.release()
+        fallbackFbos.values.forEach { GlUtil.deleteFbo(it) }
+        fallbackFbos.clear()
+        render.releaseOverlayGl()
     }
 
     private companion object {
         private const val TAG = "AssGlShaderProgram"
 
-        /** Logged when a single [drawFrame] call (Kotlin JNI call boundary included) takes at
-         * least this long — a coarse "was this frame slow" signal on top of AssBlend.c's more
-         * detailed native-side (AssBlend tag) timing. */
+        /** Logged when a single [queueInputFrame] call (Kotlin JNI call boundary included) takes
+         * at least this long — a coarse "was this frame slow" signal on top of AssOverlay.c's more
+         * detailed native-side (AssOverlay tag) timing. */
         private const val SLOW_FRAME_LOG_THRESHOLD_MS = 4
     }
 }

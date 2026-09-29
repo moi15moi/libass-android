@@ -9,9 +9,10 @@ import io.github.peerless2012.ass.AssRender
 import io.github.peerless2012.ass.media.AssHandler
 
 /**
- * A [GlEffect] that bakes ASS subtitles directly into ExoPlayer's video effects pipeline via
- * [AssGlShaderProgram], instead of going through the `OverlayEffect`/`TextureOverlay`
- * convenience wrapper. Used by [AssRenderType.EFFECTS_ATLAS][io.github.peerless2012.ass.media.type.AssRenderType.EFFECTS_ATLAS].
+ * A [GlEffect] that draws ASS subtitles directly onto each decoded video frame's own texture, in
+ * place, via [AssGlShaderProgram] — instead of going through the `OverlayEffect`/`TextureOverlay`
+ * convenience wrapper, which would require a separate output texture. Used by
+ * [AssRenderType.EFFECTS_ATLAS][io.github.peerless2012.ass.media.type.AssRenderType.EFFECTS_ATLAS].
  */
 @OptIn(UnstableApi::class)
 class AssGlEffect(

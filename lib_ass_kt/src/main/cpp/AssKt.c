@@ -10,7 +10,7 @@
 #include "fontconfig/fontconfig.h"
 #include "GLES2/gl2.h"
 #include "GLES2/gl2ext.h"
-#include "AssBlend.h"
+#include "AssOverlay.h"
 
 #define LOG_TAG "SubtitleRenderer"
 
@@ -370,10 +370,8 @@ static JNINativeMethod renderMethodTable[] = {
         {"nativeAssRenderSetFrameSize", "(JII)V", (void*)nativeAssRenderSetFrameSize},
         {"nativeAssRenderFrame", "(JJJI)Lio/github/peerless2012/ass/AssFrame;", (void*) nativeAssRenderFrame},
         {"nativeAssRenderDeinit", "(J)V", (void*)nativeAssRenderDeinit},
-        {"nativeAssBlendConfigure", "(JJIIILio/github/peerless2012/ass/AssRender;)J", (void*) nativeAssBlendConfigure},
-        {"nativeAssBlendDrawFrame", "(JJI)V", (void*) nativeAssBlendDrawFrame},
-        {"nativeAssBlendWorkerCompute", "(JJJJ)Z", (void*) nativeAssBlendWorkerCompute},
-        {"nativeAssBlendRelease", "(J)V", (void*) nativeAssBlendRelease},
+        {"nativeAssOverlayDraw", "(JJJIIIIIJ)J", (void*) nativeAssOverlayDraw},
+        {"nativeAssOverlayRelease", "(J)V", (void*) nativeAssOverlayRelease},
 };
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     JNIEnv *env = NULL;

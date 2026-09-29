@@ -36,22 +36,25 @@ class AssRender(nativeAss: Long, private val lock: ReentrantLock) {
         external fun nativeAssRenderDeinit(render: Long)
 
         @JvmStatic
-        external fun nativeAssBlendConfigure(blend: Long, render: Long, renderWidth: Int, renderHeight: Int, workerWaitMs: Int, renderObj: AssRender): Long
+        external fun nativeAssOverlayDraw(overlay: Long, render: Long, track: Long, fbo: Int, frameWidth: Int, frameHeight: Int, renderWidth: Int, renderHeight: Int, timeMs: Long): Long
 
         @JvmStatic
-        external fun nativeAssBlendDrawFrame(blend: Long, timeMs: Long, inputTexId: Int)
-
-        @JvmStatic
-        external fun nativeAssBlendWorkerCompute(blend: Long, render: Long, track: Long, timeMs: Long): Boolean
-
-        @JvmStatic
-        external fun nativeAssBlendRelease(blend: Long)
+        external fun nativeAssOverlayRelease(overlay: Long)
     }
 
     private var nativeRender: Long = nativeAssRenderInit(nativeAss)
 
-    /** Native handle for the EFFECTS_ATLAS GlEffect blend state. GL-thread owned; see [configureGlBlend]. */
-    private var nativeBlend: Long = 0L
+    /**
+     * Raw `ASS_Renderer*` pointer. Exposed read-only for callers outside this class's own API
+     * surface that need to hand it directly to a native factory function — currently only
+     * `EFFECTS_ATLAS_CPP`'s comparison effect (`com.example.subs.AssOverlayProgram.nativeCreate`),
+     * which is entirely separate native code this class has no other way to reach into.
+     */
+    val nativeRenderPtr: Long get() = nativeRender
+
+    /** Native handle for the EFFECTS_ATLAS GlEffect overlay state (atlas texture/program/VBO).
+     * GL-thread owned; see [drawOverlayFrame]. */
+    private var nativeOverlay: Long = 0L
 
     @Volatile
     var released = false
@@ -103,83 +106,45 @@ class AssRender(nativeAss: Long, private val lock: ReentrantLock) {
     }
 
     /**
-     * Configures (or reconfigures) the native GL blend state used by the EFFECTS_ATLAS `GlEffect`
-     * render path (see `lib_ass_media`'s `AssGlShaderProgram`). Must be called on the thread that
-     * owns the GL context. Safe to call more than once (e.g. on a video-dimension change) — the
-     * underlying GL objects are created lazily on first call and reused after.
+     * Draws ASS subtitles directly into [fbo] (which wraps the video frame's own decoded texture,
+     * drawn in place — see `lib_ass_media`'s `AssGlShaderProgram.queueInputFrame`) for [timeMs],
+     * synchronously. GL-thread only.
      *
-     * [workerWaitMs] is how long [drawGlBlendFrame] will bound-wait per frame for the worker to
-     * finish (see `lib_ass_media`'s `AssHandlerConfig.blendWorkerWaitMs` for the tradeoff and how to
-     * tune it); updated on every call, so later reconfigures can adjust it without needing to fully
-     * release and recreate the blend state.
+     * Unlike an earlier worker-thread/bounded-wait design this replaced, this always calls
+     * `ass_render_frame` directly, inline, on the calling thread: always frame-accurate by
+     * construction, at the cost of being able to stall video delivery if a subtitle frame is
+     * pathologically slow to render (see `AssOverlay.c`'s file header comment for the full
+     * tradeoff). Also unlike that design, a frame with no visible subtitle content does no GL work
+     * at all — there's no separate output texture to fill regardless of content.
      *
-     * On first call, this also starts a dedicated native worker thread that computes
-     * `ass_render_frame` continuously, independent of the video frame rate — see
-     * [drawGlBlendFrame] and [workerComputeBlendFrame].
+     * [frameWidth]/[frameHeight] is the video frame's own pixel size (== libass storage size, and
+     * the GL viewport this draws into); [renderWidth]/[renderHeight] is the resolution libass
+     * actually rasterizes glyphs at, which `AssHandlerConfig.maxRenderPixels` may make smaller.
+     *
+     * Runs under [lock] exactly like [renderFrame], so it is safe with respect to concurrent track
+     * mutation ([AssTrack.readChunk]) and [release] — the underlying GL objects (atlas
+     * texture/program/VBO) are created lazily on first call and reused after, mirroring how
+     * `ASS_Renderer`/`ASS_Track` are re-validated each call rather than cached across calls.
      */
-    fun configureGlBlend(renderWidth: Int, renderHeight: Int, workerWaitMs: Int): Boolean {
+    fun drawOverlayFrame(fbo: Int, frameWidth: Int, frameHeight: Int, renderWidth: Int, renderHeight: Int, timeMs: Long) {
         lock.withLock {
-            if (released || nativeRender == 0L) return false
-            nativeBlend = nativeAssBlendConfigure(nativeBlend, nativeRender, renderWidth, renderHeight, workerWaitMs, this)
-            return nativeBlend != 0L
+            if (released || nativeRender == 0L) return
+            val t = track ?: return
+            if (t.released || t.nativeAssTrack == 0L) return
+            nativeOverlay = nativeAssOverlayDraw(nativeOverlay, nativeRender, t.nativeAssTrack, fbo, frameWidth, frameHeight, renderWidth, renderHeight, timeMs)
         }
     }
 
     /**
-     * Draws one blended video+subtitle frame into the currently bound output framebuffer. GL-thread only.
-     *
-     * This never calls into libass directly — it hands the worker thread the latest requested time
-     * and bounded-waits (a few ms, see `ASS_BLEND_WORKER_WAIT_MS` in `AssBlend.c`) for
-     * [workerComputeBlendFrame] to finish that exact request before drawing whatever atlas state was
-     * published, so normal subtitle frames stay frame-accurate while a pathologically
-     * slow/complex one still can't stall video frame delivery past the timeout — it falls back to
-     * whatever the worker last published instead. It always issues the video blit even when there
-     * is no usable track yet (e.g. before the ASS track has loaded, or media with no subtitles) —
-     * only the subtitle overlay pass is skipped in that case, natively, once the worker observes
-     * there is no track.
+     * Releases the native EFFECTS_ATLAS overlay GL state (atlas texture/program/VBO). Must be
+     * called on the GL thread (mirrors [drawOverlayFrame]).
      */
-    fun drawGlBlendFrame(timeMs: Long, inputTexId: Int) {
-        if (nativeBlend == 0L) return
-        nativeAssBlendDrawFrame(nativeBlend, timeMs, inputTexId)
-    }
-
-    /**
-     * Called BACK from the native EFFECTS_ATLAS worker thread (not the GL thread) to compute one
-     * subtitle frame. Runs under [lock] exactly like [renderFrame], so it is safe with respect to
-     * concurrent track mutation ([AssTrack.readChunk]) and [release] — this is what lets the native
-     * worker thread safely touch libass state without caching a raw pointer across calls.
-     *
-     * Not called from anywhere in this module directly; invoked via JNI `CallBooleanMethod` from
-     * `AssBlend.c`'s worker thread. Kept accessible (not private) for that reason, and protected from
-     * R8/ProGuard stripping by this class's blanket `-keep` in consumer-rules.pro.
-     */
-    fun workerComputeBlendFrame(timeMs: Long): Boolean {
+    fun releaseOverlayGl() {
         lock.withLock {
-            if (released || nativeRender == 0L || nativeBlend == 0L) return false
-            val t = track ?: return false
-            if (t.released || t.nativeAssTrack == 0L) return false
-            return nativeAssBlendWorkerCompute(nativeBlend, nativeRender, t.nativeAssTrack, timeMs)
-        }
-    }
-
-    /**
-     * Releases the native GL blend state, stopping and joining the worker thread. Must be called on
-     * the GL thread (mirrors [configureGlBlend]).
-     *
-     * Deliberately does NOT hold [lock] while joining the worker thread: [workerComputeBlendFrame]
-     * needs that same lock to make progress and notice it should stop, so joining while holding it
-     * would deadlock. Clearing [nativeBlend] to 0 under a brief lock first is what makes this safe —
-     * any worker cycle that acquires the lock after that point sees a cleared handle and returns
-     * immediately without touching native state, regardless of how long the actual join then takes.
-     */
-    fun releaseGlBlend() {
-        val blend = lock.withLock {
-            val current = nativeBlend
-            nativeBlend = 0L
-            current
-        }
-        if (blend != 0L) {
-            nativeAssBlendRelease(blend)
+            if (nativeOverlay != 0L) {
+                nativeAssOverlayRelease(nativeOverlay)
+                nativeOverlay = 0L
+            }
         }
     }
 
