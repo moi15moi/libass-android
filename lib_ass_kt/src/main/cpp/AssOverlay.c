@@ -1,12 +1,13 @@
 #include "AssOverlay.h"
 
 #include <android/log.h>
+#include <ctype.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
 #include "ass/ass.h"
-#include "GLES3/gl3.h"
 
 // ============================================================================
 // EFFECTS_ATLAS: native-side subtitle-onto-video-frame overlay for the GlEffect path.
@@ -55,64 +56,95 @@ static inline long long assOverlayNowMs(void) {
     return (long long) ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
 }
 
-// One packed subtitle piece. Position/color are carried raw (not yet clip-space/UV-normalized):
-// that conversion depends on renderWidth/renderHeight and the atlas texture's current capacity, so
-// it happens at vertex-build time rather than being baked in while packing.
-typedef struct {
-    int atlasX, atlasY;
-    int dstX, dstY, w, h;
-    float r, g, b, a;
-    // Source pixels. Only dereferenced during the ass_render_frame call that produced them; kept
-    // after that purely for pointer comparison in assOverlayUpdatePositions.
-    const unsigned char* bitmap;
-    int stride;
-} AssOverlayPiece;
+// Draws every currently-visible subtitle piece of one atlas page in one batched call. Colors vary
+// per piece so they travel as a per-vertex attribute (not a uniform, since one draw call spans many
+// differently-colored pieces). Output is fully premultiplied (by both opacity and glyph coverage)
+// so it can be composited with a standard premultiplied "over" blend function directly onto the
+// video texture.
+static const char* kAssOverlayVertexShader =
+    "attribute vec2 a_Position;\n"
+    "attribute vec2 a_TexCoord;\n"
+    "attribute vec4 a_Color;\n"
+    "varying vec2 v_TexCoord;\n"
+    "varying vec4 v_Color;\n"
+    "void main() {\n"
+    "    gl_Position = vec4(a_Position, 0.0, 1.0);\n"
+    "    v_TexCoord = a_TexCoord;\n"
+    "    v_Color = a_Color;\n"
+    "}\n";
 
-// One atlas page: a GPU texture holding a CONTIGUOUS run [firstPiece, firstPiece + pieceCount) of
-// ctx->pieces[] (i.e. of the libass image list). A heavy typesetting frame can easily produce more
-// bitmap area than fits in a single max-size texture; rather than silently dropping whatever
-// doesn't fit, packing spills into another page. Pages are drawn in order, and each holds a
-// contiguous list range, so the overall paint order (and therefore the "over" blending) is exactly
-// libass's list order regardless of how many pages were needed.
-typedef struct {
-    GLuint tex;
-    int capW, capH; // allocated GPU texture capacity (grows in steps, rarely reallocated)
-    int usedW, usedH; // tight packed size actually used by the last pack
-    int firstPiece, pieceCount;
-} AssOverlayPage;
+static const char* kAssOverlayFragmentShader =
+    "precision mediump float;\n"
+    // highp: mediump is fp16 on most mobile GPUs, which can't address individual texels of a
+    // multi-thousand-texel atlas (UVs in [0.5, 1) of a 4096 atlas already step by 2 texels), making pieces
+    // sample their neighbors/padding instead of their own bitmap.
+    "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
+    "varying highp vec2 v_TexCoord;\n"
+    "#else\n"
+    "varying vec2 v_TexCoord;\n"
+    "#endif\n"
+    "varying vec4 v_Color;\n"
+    "uniform sampler2D u_Texture;\n"
+    "void main() {\n"
+    "    float coverage = texture2D(u_Texture, v_TexCoord).a;\n"
+    "    float a = v_Color.a * coverage;\n"
+    "    gl_FragColor = vec4(v_Color.rgb * a, a);\n"
+    "}\n";
 
-typedef struct {
-    // GL objects, created lazily on first call.
-    GLuint atlasProgram;
-    GLint atlasAPosition;
-    GLint atlasATexCoord;
-    GLint atlasAColor;
-    GLint atlasUTexture;
-    GLuint atlasVbo;
-    int maxAtlasSize;
-    int gles3;   // context is GLES 3.0+: R8 textures + PBO uploads (see assOverlayUpload)
-    GLuint pbo;  // GL_PIXEL_UNPACK_BUFFER reused for every page upload (GLES3 only)
 
-    // Pages [0, pageCount) are in use; [pageCount, pageCap) keep their textures around for reuse.
-    AssOverlayPage* pages;
-    int pageCap;
-    int pageCount;
+// Allocates the context and its GL objects. Must be called on the GL thread with the context current.
+static AssOverlayContext* assOverlayCreate(void) {
+    AssOverlayContext* ctx = (AssOverlayContext*) calloc(1, sizeof(AssOverlayContext));
+    if (ctx == NULL)
+    {
+        __android_log_print(ANDROID_LOG_INFO, ASS_OVERLAY_LOG_TAG, "Failed to allocate AssOverlayContext");
+        return NULL;
+    }
 
-    // libass size state, only re-applied via ass_set_* when they actually change.
-    int frameW, frameH;             // the video frame's own pixel size == libass storage size == GL viewport
-    int renderWidth, renderHeight;  // libass's own render target (may be smaller, via maxRenderPixels)
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &ctx->maxAtlasSize);
 
-    // CPU-side staging for one page at a time. Fully synchronous, no cross-thread handoff.
-    unsigned char* atlasBuf;
-    int atlasBufCap;
+    const char* version = (const char*) glGetString(GL_VERSION);
+    int major = 0, minor = 0;
+    if (version) {
+        const char* ver = version;
+        while (!isdigit((unsigned char) *ver) && *ver != '\0')
+            ver++;
+        if (sscanf(ver, "%d.%d", &major, &minor) != 2) {
+            major = 0;
+            __android_log_print(ANDROID_LOG_INFO, ASS_OVERLAY_LOG_TAG, "Invalid GL_VERSION string %s", version);
+        }
+    }
+    ctx->bIsGles3 = major >= 3;
+    __android_log_print(ANDROID_LOG_INFO, ASS_OVERLAY_LOG_TAG, "GL_VERSION=%s, max texture size %d, %s path",
+        version ? version : "?", ctx->maxAtlasSize, ctx->bIsGles3 ? "GLES3 PBO/R8" : "GLES2");
 
-    AssOverlayPiece* pieces;
-    int pieceCap;
-    int pieceCount; // current visible piece count; sticky across changed==0 frames
+    ctx->atlasProgram = assOverlayLinkProgram(kAssOverlayVertexShader, kAssOverlayFragmentShader);
+    ctx->atlasAPosition = glGetAttribLocation(ctx->atlasProgram, "a_Position");
+    ctx->atlasATexCoord = glGetAttribLocation(ctx->atlasProgram, "a_TexCoord");
+    ctx->atlasAColor = glGetAttribLocation(ctx->atlasProgram, "a_Color");
+    ctx->atlasUTexture = glGetUniformLocation(ctx->atlasProgram, "u_Texture");
+    glGenBuffers(1, &ctx->atlasVbo);
+    return ctx;
+}
 
-    float* vertexBuf; // interleaved atlas vertex data, ASS_OVERLAY_VERTEX_FLOATS per vertex
-    int vertexCapFloats;
-} AssOverlayContext;
+// Frees the context and deletes its GL objects. Must be called on the GL thread with the context current.
+static void assOverlayDestroy(AssOverlayContext* ctx) {
+    if (ctx == NULL) return;
+
+    for (int i = 0; i < ctx->pageCap; i++) {
+        if (ctx->pages[i].tex) glDeleteTextures(1, &ctx->pages[i].tex);
+    }
+    if (ctx->atlasProgram) glDeleteProgram(ctx->atlasProgram);
+    if (ctx->atlasVbo) glDeleteBuffers(1, &ctx->atlasVbo);
+    if (ctx->pbo) glDeleteBuffers(1, &ctx->pbo);
+
+    free(ctx->pages);
+    free(ctx->vertexBuf);
+    free(ctx->atlasBuf);
+    free(ctx->pieces);
+    free(ctx);
+}
+
 
 static GLuint assOverlayCompileShader(GLenum type, const char* src) {
     GLuint shader = glCreateShader(type);
@@ -157,40 +189,6 @@ static GLuint assOverlayLinkProgram(const char* vsSrc, const char* fsSrc) {
     return program;
 }
 
-// Draws every currently-visible subtitle piece of one atlas page in one batched call. Colors vary
-// per piece so they travel as a per-vertex attribute (not a uniform, since one draw call spans many
-// differently-colored pieces). Output is fully premultiplied (by both opacity and glyph coverage)
-// so it can be composited with a standard premultiplied "over" blend function directly onto the
-// video texture.
-static const char* kAssOverlayVertexShader =
-    "attribute vec2 a_Position;\n"
-    "attribute vec2 a_TexCoord;\n"
-    "attribute vec4 a_Color;\n"
-    "varying vec2 v_TexCoord;\n"
-    "varying vec4 v_Color;\n"
-    "void main() {\n"
-    "    gl_Position = vec4(a_Position, 0.0, 1.0);\n"
-    "    v_TexCoord = a_TexCoord;\n"
-    "    v_Color = a_Color;\n"
-    "}\n";
-
-static const char* kAssOverlayFragmentShader =
-    "precision mediump float;\n"
-    // highp: mediump is fp16 on most mobile GPUs, which can't address individual texels of a
-    // multi-thousand-texel atlas (UVs in [0.5, 1) of a 4096 atlas already step by 2 texels), making pieces
-    // sample their neighbors/padding instead of their own bitmap.
-    "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
-    "varying highp vec2 v_TexCoord;\n"
-    "#else\n"
-    "varying vec2 v_TexCoord;\n"
-    "#endif\n"
-    "varying vec4 v_Color;\n"
-    "uniform sampler2D u_Texture;\n"
-    "void main() {\n"
-    "    float coverage = texture2D(u_Texture, v_TexCoord).a;\n"
-    "    float a = v_Color.a * coverage;\n"
-    "    gl_FragColor = vec4(v_Color.rgb * a, a);\n"
-    "}\n";
 
 static void assOverlayEnsureBuffer(AssOverlayContext* ctx, int atlasBytesNeeded, int pieceCountNeeded) {
     if (atlasBytesNeeded > ctx->atlasBufCap) {
@@ -351,8 +349,10 @@ static void assOverlayBindPageTexture(AssOverlayContext* ctx, AssOverlayPage* pg
         glBindTexture(GL_TEXTURE_2D, pg->tex);
         return;
     }
-    int newW = pg->capW > pg->usedW ? pg->capW : pg->usedW;
-    int newH = pg->capH > pg->usedH ? pg->capH : pg->usedH;
+    // An overflowing dimension gets 1/8 headroom on top of what's needed, so a page that keeps
+    // creeping up by a few rows doesn't reallocate (and re-page-in) a multi-MB texture each time.
+    int newW = pg->capW >= pg->usedW ? pg->capW : pg->usedW + pg->usedW / 8;
+    int newH = pg->capH >= pg->usedH ? pg->capH : pg->usedH + pg->usedH / 8;
     newW = ((newW + ASS_OVERLAY_ATLAS_GROW_STEP - 1) / ASS_OVERLAY_ATLAS_GROW_STEP) * ASS_OVERLAY_ATLAS_GROW_STEP;
     newH = ((newH + ASS_OVERLAY_ATLAS_GROW_STEP - 1) / ASS_OVERLAY_ATLAS_GROW_STEP) * ASS_OVERLAY_ATLAS_GROW_STEP;
     if (newW > ctx->maxAtlasSize) newW = ctx->maxAtlasSize;
@@ -369,7 +369,7 @@ static void assOverlayBindPageTexture(AssOverlayContext* ctx, AssOverlayPage* pg
     // neighboring packed piece.
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    if (ctx->gles3) {
+    if (ctx->bIsGles3) {
         // GL_R8 is a native format everywhere; legacy GL_ALPHA is emulated by several mobile
         // drivers (converted on the CPU to a wider format during every upload). The swizzle keeps
         // the shader's `.a` read unchanged.
@@ -393,15 +393,20 @@ static void assOverlayUpload(AssOverlayContext* ctx) {
         AssOverlayPage* pg = &ctx->pages[pi];
         size_t bytes = (size_t) pg->usedW * (size_t) pg->usedH;
         assOverlayBindPageTexture(ctx, pg);
-        GLenum format = ctx->gles3 ? GL_RED : GL_ALPHA;
+        GLenum format = ctx->bIsGles3 ? GL_RED : GL_ALPHA;
 
         int uploaded = 0;
-        if (ctx->gles3) {
+        if (ctx->bIsGles3) {
             if (!ctx->pbo) glGenBuffers(1, &ctx->pbo);
             glBindBuffer(GL_PIXEL_UNPACK_BUFFER, ctx->pbo);
+            // Sized to the largest page capacity seen, not to this page's exact used area: drivers
+            // only recycle orphaned storage of the SAME size, so a size that varied with every
+            // pack meant a fresh multi-MB allocation (and its page faults) on each change.
+            size_t capBytes = (size_t) pg->capW * (size_t) pg->capH;
+            if (ctx->pboSize < capBytes) ctx->pboSize = capBytes;
             // Orphan: the driver hands out fresh storage if the GPU is still reading the previous
             // frame's upload from this buffer, so mapping never stalls on it.
-            glBufferData(GL_PIXEL_UNPACK_BUFFER, (GLsizeiptr) bytes, NULL, GL_STREAM_DRAW);
+            glBufferData(GL_PIXEL_UNPACK_BUFFER, (GLsizeiptr) ctx->pboSize, NULL, GL_STREAM_DRAW);
             unsigned char* mapped = (unsigned char*) glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, (GLsizeiptr) bytes,
                 GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
             if (mapped) {
@@ -518,6 +523,7 @@ static void assOverlayBuildVertices(AssOverlayContext* ctx) {
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
+
 // Called every video frame, on the GL thread, from AssRender.kt's drawOverlayFrame (itself called
 // from AssGlShaderProgram.queueInputFrame). `fbo` wraps the frame's own decoded-video texture -
 // this draws directly into it, in place; the caller forwards that same texture downstream
@@ -528,28 +534,8 @@ jlong nativeAssOverlayDraw(JNIEnv* env, jclass clazz, jlong overlay, jlong rende
     if (!render || !track) return overlay;
     AssOverlayContext* ctx = (AssOverlayContext*) overlay;
     if (ctx == NULL) {
-        ctx = (AssOverlayContext*) calloc(1, sizeof(AssOverlayContext));
+        ctx = assOverlayCreate();
         if (ctx == NULL) return 0;
-
-        // Same limit as mpv's GPU OSD atlas (video/out/gpu/osd.c checks against
-        // ra->max_texture_wh, i.e. GL_MAX_TEXTURE_SIZE): no extra cap of our own. 2048 is the
-        // minimum GLES 3.0 guarantees, used only if the query somehow fails.
-        GLint maxTexSize = 0;
-        glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTexSize);
-        ctx->maxAtlasSize = maxTexSize > 0 ? maxTexSize : 2048;
-        // media3 asks for an ES 2 context for SDR, but Android drivers return the highest
-        // compatible version, which is 3.x on practically every device: check what we really got.
-        const char* version = (const char*) glGetString(GL_VERSION); // "OpenGL ES 3.2 ..."
-        ctx->gles3 = version != NULL && strncmp(version, "OpenGL ES ", 10) == 0 && version[10] >= '3' && version[10] <= '9';
-        __android_log_print(ANDROID_LOG_INFO, ASS_OVERLAY_LOG_TAG, "GL_VERSION=%s, max texture size %d, %s path",
-            version ? version : "?", ctx->maxAtlasSize, ctx->gles3 ? "GLES3 PBO/R8" : "GLES2");
-
-        ctx->atlasProgram = assOverlayLinkProgram(kAssOverlayVertexShader, kAssOverlayFragmentShader);
-        ctx->atlasAPosition = glGetAttribLocation(ctx->atlasProgram, "a_Position");
-        ctx->atlasATexCoord = glGetAttribLocation(ctx->atlasProgram, "a_TexCoord");
-        ctx->atlasAColor = glGetAttribLocation(ctx->atlasProgram, "a_Color");
-        ctx->atlasUTexture = glGetUniformLocation(ctx->atlasProgram, "u_Texture");
-        glGenBuffers(1, &ctx->atlasVbo);
     }
 
     if (frameWidth != ctx->frameW || frameHeight != ctx->frameH) {
@@ -606,7 +592,7 @@ jlong nativeAssOverlayDraw(JNIEnv* env, jclass clazz, jlong overlay, jlong rende
                 __android_log_print(ANDROID_LOG_WARN, ASS_OVERLAY_LOG_TAG,
                     "upload(timeMs=%lld, pieces=%d, pages=%d, %lldKB, %s) took %lldms, vertices %lldms",
                     (long long) timeMs, ctx->pieceCount, ctx->pageCount, bytes / 1024,
-                    ctx->gles3 ? "PBO/R8" : "GLES2/ALPHA", t3 - t2, t4 - t3);
+                    ctx->bIsGles3 ? "PBO/R8" : "GLES2/ALPHA", t3 - t2, t4 - t3);
             }
         }
     }
@@ -664,19 +650,5 @@ jlong nativeAssOverlayDraw(JNIEnv* env, jclass clazz, jlong overlay, jlong rende
 }
 
 void nativeAssOverlayRelease(JNIEnv* env, jclass clazz, jlong overlay) {
-    if (!overlay) return;
-    AssOverlayContext* ctx = (AssOverlayContext*) overlay;
-
-    for (int i = 0; i < ctx->pageCap; i++) {
-        if (ctx->pages[i].tex) glDeleteTextures(1, &ctx->pages[i].tex);
-    }
-    if (ctx->atlasProgram) glDeleteProgram(ctx->atlasProgram);
-    if (ctx->atlasVbo) glDeleteBuffers(1, &ctx->atlasVbo);
-    if (ctx->pbo) glDeleteBuffers(1, &ctx->pbo);
-
-    free(ctx->pages);
-    free(ctx->vertexBuf);
-    free(ctx->atlasBuf);
-    free(ctx->pieces);
-    free(ctx);
+    assOverlayDestroy((AssOverlayContext*) overlay);
 }
