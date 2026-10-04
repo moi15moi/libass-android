@@ -10,7 +10,6 @@ import androidx.media3.common.util.GlUtil
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.GlShaderProgram
 import io.github.peerless2012.ass.AssRender
-import io.github.peerless2012.ass.media.AssHandler
 import java.util.concurrent.Executor
 
 /**
@@ -34,7 +33,6 @@ import java.util.concurrent.Executor
  */
 @OptIn(UnstableApi::class)
 class AssGlShaderProgram(
-    private val handler: AssHandler,
     private val render: AssRender
 ) : GlShaderProgram {
 
@@ -76,18 +74,11 @@ class AssGlShaderProgram(
                     GlUtil.createFboForTexture(inputTexture.texId)
                 }
             }
-            // renderSize may be smaller than the actual frame (AssHandlerConfig.maxRenderPixels):
-            // libass rasterizes glyphs at renderSize, and the native side scales piece positions up
-            // to fill the actual frameWidth/frameHeight for free (clip-space math is resolution-
-            // independent) — same technique the earlier blit-based design used.
-            val renderSize = handler.computeRenderSize(inputTexture.width, inputTexture.height)
             val startNs = System.nanoTime()
             render.drawOverlayFrame(
                 fbo,
                 inputTexture.width,
                 inputTexture.height,
-                renderSize.width,
-                renderSize.height,
                 presentationTimeUs / 1000
             )
             val elapsedMs = (System.nanoTime() - startNs) / 1_000_000

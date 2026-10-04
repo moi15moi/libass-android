@@ -28,7 +28,7 @@ class AssOverlayManager(
         if (renderer == currentRenderer) return
         this.currentRenderer = renderer
         val effect: Effect = when (renderType) {
-            AssRenderType.EFFECTS_ATLAS -> AssGlEffect(handler, renderer)
+            AssRenderType.EFFECTS_ATLAS -> AssGlEffect(renderer)
             // A/B comparison effect (see AssRenderType.EFFECTS_ATLAS_CPP's doc): captures whatever
             // track is current right now, via ass_gl_overlay.cpp's own nativeCreate - it will not
             // pick up later track changes the way AssGlEffect does.

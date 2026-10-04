@@ -157,7 +157,7 @@ player = ExoPlayer.Builder(this)
 | :----: | :----: | :---- |
 | `glyphSize` | 10000 | Maximum number of glyph cache entries in libass |
 | `cacheSize` | 128 | Maximum bitmap cache size in MB for libass |
-| `maxRenderPixels` | 0 | Maximum pixel count for subtitle rendering (0 = no limit) |
+| `maxRenderPixels` | 0 | Maximum pixel count for subtitle rendering (0 = no limit). Ignored by `EFFECTS_ATLAS` and `EFFECTS_ATLAS_CPP` |
 
 ### Render Downscaling (`maxRenderPixels`)
 

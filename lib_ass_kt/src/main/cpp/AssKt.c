@@ -370,7 +370,7 @@ static JNINativeMethod renderMethodTable[] = {
         {"nativeAssRenderSetFrameSize", "(JII)V", (void*)nativeAssRenderSetFrameSize},
         {"nativeAssRenderFrame", "(JJJI)Lio/github/peerless2012/ass/AssFrame;", (void*) nativeAssRenderFrame},
         {"nativeAssRenderDeinit", "(J)V", (void*)nativeAssRenderDeinit},
-        {"nativeAssOverlayDraw", "(JJJIIIIIJ)J", (void*) nativeAssOverlayDraw},
+        {"nativeAssOverlayDraw", "(JJJIIIJ)J", (void*) nativeAssOverlayDraw},
         {"nativeAssOverlayRelease", "(J)V", (void*) nativeAssOverlayRelease},
 };
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {

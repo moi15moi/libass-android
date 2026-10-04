@@ -36,7 +36,7 @@ class AssRender(nativeAss: Long, private val lock: ReentrantLock) {
         external fun nativeAssRenderDeinit(render: Long)
 
         @JvmStatic
-        external fun nativeAssOverlayDraw(overlay: Long, render: Long, track: Long, fbo: Int, frameWidth: Int, frameHeight: Int, renderWidth: Int, renderHeight: Int, timeMs: Long): Long
+        external fun nativeAssOverlayDraw(overlay: Long, render: Long, track: Long, fbo: Int, frameWidth: Int, frameHeight: Int, timeMs: Long): Long
 
         @JvmStatic
         external fun nativeAssOverlayRelease(overlay: Long)
@@ -117,21 +117,20 @@ class AssRender(nativeAss: Long, private val lock: ReentrantLock) {
      * tradeoff). Also unlike that design, a frame with no visible subtitle content does no GL work
      * at all — there's no separate output texture to fill regardless of content.
      *
-     * [frameWidth]/[frameHeight] is the video frame's own pixel size (== libass storage size, and
-     * the GL viewport this draws into); [renderWidth]/[renderHeight] is the resolution libass
-     * actually rasterizes glyphs at, which `AssHandlerConfig.maxRenderPixels` may make smaller.
+     * [frameWidth]/[frameHeight] is the video frame's own pixel size: libass storage and frame
+     * size, and the GL viewport this draws into. `AssHandlerConfig.maxRenderPixels` does not apply.
      *
      * Runs under [lock] exactly like [renderFrame], so it is safe with respect to concurrent track
      * mutation ([AssTrack.readChunk]) and [release] — the underlying GL objects (atlas
      * texture/program/VBO) are created lazily on first call and reused after, mirroring how
      * `ASS_Renderer`/`ASS_Track` are re-validated each call rather than cached across calls.
      */
-    fun drawOverlayFrame(fbo: Int, frameWidth: Int, frameHeight: Int, renderWidth: Int, renderHeight: Int, timeMs: Long) {
+    fun drawOverlayFrame(fbo: Int, frameWidth: Int, frameHeight: Int, timeMs: Long) {
         lock.withLock {
             if (released || nativeRender == 0L) return
             val t = track ?: return
             if (t.released || t.nativeAssTrack == 0L) return
-            nativeOverlay = nativeAssOverlayDraw(nativeOverlay, nativeRender, t.nativeAssTrack, fbo, frameWidth, frameHeight, renderWidth, renderHeight, timeMs)
+            nativeOverlay = nativeAssOverlayDraw(nativeOverlay, nativeRender, t.nativeAssTrack, fbo, frameWidth, frameHeight, timeMs)
         }
     }
 

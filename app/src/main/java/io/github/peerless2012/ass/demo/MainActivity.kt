@@ -51,7 +51,6 @@ class MainActivity : AppCompatActivity() {
             .buildWithAssSupport(
                 this,
                 AssRenderType.EFFECTS_ATLAS,
-                // maxRenderPixels = 720*480
                 AssHandlerConfig(),
                 playerView.subtitleView
             )

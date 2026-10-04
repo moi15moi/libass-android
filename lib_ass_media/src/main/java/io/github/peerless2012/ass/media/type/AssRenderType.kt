@@ -36,8 +36,7 @@ enum class AssRenderType {
      * Same idea as [EFFECTS_ATLAS] (in-place GL overlay, no worker thread), but backed by a
      * separate, mostly-unmodified C++ reference implementation (`ass_gl_overlay.cpp`) instead of
      * this library's own native code, kept side by side purely to A/B-compare performance against
-     * [EFFECTS_ATLAS]. Not feature-equivalent: no `AssHandlerConfig.maxRenderPixels` downscaling
-     * support, and it captures whatever subtitle track is current when the effect is created —
+     * [EFFECTS_ATLAS]. Not feature-equivalent: it captures whatever subtitle track is current when the effect is created —
      * it does not follow later track changes.
      */
     EFFECTS_ATLAS_CPP,

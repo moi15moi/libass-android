@@ -2,18 +2,19 @@
 #define LIBASS_ANDROID_ASS_OVERLAY_H
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <jni.h>
 #include "GLES3/gl3.h"
 
 // Native side of AssRenderType.EFFECTS_ATLAS.
 
 // One packed subtitle piece. Position/color are carried raw (not yet clip-space/UV-normalized):
-// that conversion depends on renderWidth/renderHeight and the atlas texture's current capacity, so
+// that conversion depends on frameW/frameH and the atlas texture's current capacity, so
 // it happens at vertex-build time rather than being baked in while packing.
 typedef struct {
     int atlasX, atlasY;
     int dstX, dstY, w, h;
-    float r, g, b, a;
+    uint32_t color; // libass RGBA, A being transparency
     // Source pixels. Only dereferenced during the ass_render_frame call that produced them; kept
     // after that purely for pointer comparison in assOverlayUpdatePositions.
     const unsigned char* bitmap;
@@ -34,12 +35,17 @@ typedef struct {
 } AssOverlayPage;
 
 typedef struct {
+    float x, y; // clip space
+    float u, v; // atlas texture coordinates
+    uint8_t r, g, b, a; // normalized to [0, 1] by the attribute pointer
+} AssOverlayVertex;
+
+typedef struct {
     // GL objects, created lazily on first call.
     GLuint atlasProgram;
     GLint atlasAPosition;
     GLint atlasATexCoord;
     GLint atlasAColor;
-    GLint atlasUTexture;
     GLuint atlasVbo;
     int maxAtlasSize;
     bool bIsGles3;   // context is GLES 3.0+: R8 textures + PBO uploads (see assOverlayUpload)
@@ -51,11 +57,11 @@ typedef struct {
     int pageCap;
     int pageCount;
 
-    // libass size state, only re-applied via ass_set_* when they actually change.
-    int frameW, frameH;             // the video frame's own pixel size == libass storage size == GL viewport
-    int renderWidth, renderHeight;  // libass's own render target (may be smaller, via maxRenderPixels)
+    // The video frame's own pixel size == libass storage and frame size == GL viewport. Only
+    // re-applied via ass_set_* when it actually changes.
+    int frameW, frameH;
 
-    // CPU-side staging for one page at a time. Fully synchronous, no cross-thread handoff.
+    // CPU-side staging for one page at a time (GLES2, or if mapping the PBO fails).
     unsigned char* atlasBuf;
     int atlasBufCap;
 
@@ -63,18 +69,12 @@ typedef struct {
     int pieceCap;
     int pieceCount; // current visible piece count; sticky across changed==0 frames
 
-    float* vertexBuf; // interleaved atlas vertex data, ASS_OVERLAY_VERTEX_FLOATS per vertex
-    int vertexCapFloats;
+    AssOverlayVertex* vertexBuf; // 6 vertices (two triangles) per piece
+    int vertexCap;
 } AssOverlayContext;
 
-
-static AssOverlayContext* assOverlayCreate(void);
-static void assOverlayDestroy(AssOverlayContext* ctx);
-static GLuint assOverlayCompileShader(GLenum type, const char* src);
-static GLuint assOverlayLinkProgram(const char* vsSrc, const char* fsSrc);
-
 jlong nativeAssOverlayDraw(JNIEnv* env, jclass clazz, jlong overlay, jlong render, jlong track,
-    jint fbo, jint frameWidth, jint frameHeight, jint renderWidth, jint renderHeight, jlong timeMs);
+    jint fbo, jint frameWidth, jint frameHeight, jlong timeMs);
 
 void nativeAssOverlayRelease(JNIEnv* env, jclass clazz, jlong overlay);
 

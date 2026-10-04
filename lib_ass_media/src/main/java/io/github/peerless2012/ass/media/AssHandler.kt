@@ -379,7 +379,9 @@ class AssHandler(
 
     /**
      * Computes the actual render size, downscaling proportionally if the frame
-     * exceeds [AssHandlerConfig.maxRenderPixels].
+     * exceeds [AssHandlerConfig.maxRenderPixels]. [AssRenderType.EFFECTS_ATLAS] always renders at
+     * full size: its native side sets libass's frame size itself and only re-applies it when the
+     * frame size changes, so a downscaled size set here would stick.
      *
      * The result is aligned to even numbers for consistent libass internal layout.
      *
@@ -389,7 +391,7 @@ class AssHandler(
      */
     fun computeRenderSize(width: Int, height: Int): Size {
         val max = config.maxRenderPixels
-        if (max <= 0) return Size(width, height)
+        if (max <= 0 || renderType == AssRenderType.EFFECTS_ATLAS) return Size(width, height)
         val pixels = width.toLong() * height
         if (pixels <= max) return Size(width, height)
         val scale = Math.sqrt(max.toDouble() / pixels).toFloat()
