@@ -57,7 +57,7 @@
 // Define to also log, for every slow frame, a per-stage microsecond breakdown of the atlas update
 // (pack, texture allocation, PBO map, fill, upload, vertices) and its area stats (piece texels vs
 // packed vs allocated). Off by default: it adds clock reads and an extra pass over the pieces.
-#define ASS_OVERLAY_PROFILE
+// #define ASS_OVERLAY_PROFILE
 #ifdef ASS_OVERLAY_PROFILE
 #define ASS_OVERLAY_PROF(...) __VA_ARGS__
 #else
