@@ -12,10 +12,6 @@
 #include "GLES3/gl3.h"
 #include "ass/ass.h"
 
-#define STB_RECT_PACK_IMPLEMENTATION
-#define STBRP_STATIC
-#include "stb_rect_pack.h"
-
 // ============================================================================
 // EFFECTS_ATLAS: native-side subtitle-onto-video-frame overlay for the GlEffect path.
 //
@@ -23,9 +19,10 @@
 // OWN texture (drawn in place): there is no separate output texture and no full-frame copy, and
 // frames with no visible subtitle content do no GL work at all.
 //
-// Glyph pieces are packed (stb_rect_pack's skyline packer) into persistent, reused GPU texture
-// atlas pages - normally just one, more only when a heavy typesetting frame doesn't fit in a single
-// max-size texture - so subtitle rendering is one batched draw call per page per frame.
+// Glyph pieces are skyline-packed into persistent, reused GPU texture atlas pages - normally just
+// one, more only when a heavy typesetting frame doesn't fit in a single max-size texture - so
+// subtitle rendering is one batched draw call per page per frame. A bitmap libass hands out
+// several times in one frame is stored once per page.
 //
 // ass_render_frame runs synchronously on this call (the GL thread), so every frame is
 // frame-accurate, at the cost that a pathologically slow subtitle frame can stall video delivery
@@ -75,6 +72,9 @@ typedef struct {
     // after that purely for pointer comparison in assOverlayUpdatePositions.
     const unsigned char* bitmap;
     int stride;
+    // Closest earlier piece showing the very same bitmap, or -1. When that copy is on the same page,
+    // this piece samples its texels instead of being stored (and uploaded) again.
+    int sameAs;
 } AssOverlayPiece;
 
 // One atlas page: a GPU texture holding a CONTIGUOUS run [firstPiece, firstPiece + pieceCount) of
@@ -89,6 +89,16 @@ typedef struct {
     int usedW, usedH; // tight packed size actually used by the last pack
     int firstPiece, pieceCount;
 } AssOverlayPage;
+
+// One step of a page's skyline: the packed height over the columns [x, next node's x).
+typedef struct {
+    int x, y;
+} AssOverlaySkyNode;
+
+// A piece in packing order (see assOverlayCompareTallestFirst).
+typedef struct {
+    int h, w, piece;
+} AssOverlayPackEntry;
 
 typedef struct {
     float x, y; // clip space
@@ -129,11 +139,14 @@ typedef struct {
     size_t atlasBufCap;
 
     AssOverlayPiece* pieces;
-    stbrp_rect* packRects; // same capacity as pieces; packRects[i] is pieces[i]
     int pieceCap;
-    stbrp_node* packNodes; // skyline packer scratch, one node per atlas column
-    int packNodeCap;
     int pieceCount; // current visible piece count; sticky across changed==0 frames
+
+    // Packer scratch, sized along with pieces[] (see assOverlayEnsurePieces).
+    AssOverlayPackEntry* packOrder; // every piece, in packing order
+    AssOverlaySkyNode* skyNodes; // skyline of the page being packed: each placed piece adds at most one node
+    int* bitmapSlots; // hash table of piece indices (-1 = empty slot), see assOverlayLinkRepeats
+    int bitmapSlotCap; // a power of two, at least twice pieceCap
 
     AssOverlayVertex* vertexBuf; // ASS_OVERLAY_VERTICES_PER_PIECE vertices per piece
     int vertexCap;
@@ -271,8 +284,9 @@ static void assOverlayDestroy(AssOverlayContext* ctx) {
     free(ctx->vertexBuf);
     free(ctx->atlasBuf);
     free(ctx->pieces);
-    free(ctx->packRects);
-    free(ctx->packNodes);
+    free(ctx->packOrder);
+    free(ctx->skyNodes);
+    free(ctx->bitmapSlots);
     free(ctx);
 }
 
@@ -313,7 +327,7 @@ static AssOverlayContext* assOverlayCreate(void) {
     return ctx;
 }
 
-// Makes room for `count` pieces (and their packer rects and vertices). Capacity at least doubles
+// Makes room for `count` pieces (and their packer scratch and vertices). Capacity at least doubles
 // on each growth, so a piece count that creeps up frame by frame only rarely reallocates. Returns
 // false on OOM (the existing buffers are kept).
 static bool assOverlayEnsurePieces(AssOverlayContext* ctx, int count) {
@@ -323,9 +337,18 @@ static bool assOverlayEnsurePieces(AssOverlayContext* ctx, int count) {
     AssOverlayPiece* grown = (AssOverlayPiece*) realloc(ctx->pieces, (size_t) newCap * sizeof(AssOverlayPiece));
     if (grown == NULL) return false;
     ctx->pieces = grown;
-    stbrp_rect* grownRects = (stbrp_rect*) realloc(ctx->packRects, (size_t) newCap * sizeof(stbrp_rect));
-    if (grownRects == NULL) return false;
-    ctx->packRects = grownRects;
+    AssOverlayPackEntry* grownOrder = (AssOverlayPackEntry*) realloc(ctx->packOrder, (size_t) newCap * sizeof(AssOverlayPackEntry));
+    if (grownOrder == NULL) return false;
+    ctx->packOrder = grownOrder;
+    AssOverlaySkyNode* grownNodes = (AssOverlaySkyNode*) realloc(ctx->skyNodes, (size_t) (newCap + 2) * sizeof(AssOverlaySkyNode));
+    if (grownNodes == NULL) return false;
+    ctx->skyNodes = grownNodes;
+    int newSlotCap = ctx->bitmapSlotCap > 0 ? ctx->bitmapSlotCap : 2 * ASS_OVERLAY_MIN_PIECE_CAP;
+    while (newSlotCap < 2 * newCap) newSlotCap *= 2;
+    int* grownSlots = (int*) realloc(ctx->bitmapSlots, (size_t) newSlotCap * sizeof(int));
+    if (grownSlots == NULL) return false;
+    ctx->bitmapSlots = grownSlots;
+    ctx->bitmapSlotCap = newSlotCap;
     int newVertexCap = newCap * ASS_OVERLAY_VERTICES_PER_PIECE;
     AssOverlayVertex* grownVertices = (AssOverlayVertex*) realloc(ctx->vertexBuf, (size_t) newVertexCap * sizeof(AssOverlayVertex));
     if (grownVertices == NULL) return false;
@@ -361,98 +384,162 @@ static bool assOverlayEnsurePage(AssOverlayContext* ctx, int page) {
     return true;
 }
 
-// Common case: every piece on one page, placed by stb_rect_pack's best-fit skyline packer (which
-// visits pieces tallest first and fills the gaps under shorter ones). Placement order is free here
-// because only pieces[] order (libass list order) decides the paint order, and a single page is
-// drawn in one call over all of pieces[]; stb hands each rect back at its original index. Returns
-// false if the pieces don't all fit in one packW x maxSize page.
-static bool assOverlayPackSkyline(AssOverlayContext* ctx, int packW) {
-    // One node per column: stb otherwise quantizes widths to fit its scratch, wasting space.
-    if (packW > ctx->packNodeCap) {
-        stbrp_node* grown = (stbrp_node*) realloc(ctx->packNodes, (size_t) packW * sizeof(stbrp_node));
-        if (grown == NULL) return false;
-        ctx->packNodes = grown;
-        ctx->packNodeCap = packW;
+// Links every piece to the closest earlier piece showing the very same bitmap (same pixels, size
+// and stride), or -1. libass hands out one cached bitmap several times per frame - layered copies
+// of a sign, repeated effect strips - and a page stores such a bitmap only once.
+static void assOverlayLinkRepeats(AssOverlayContext* ctx) {
+    const uint32_t mask = (uint32_t) ctx->bitmapSlotCap - 1;
+    memset(ctx->bitmapSlots, 0xFF, (size_t) ctx->bitmapSlotCap * sizeof(int)); // every slot -1
+    for (int pieceIdx = 0; pieceIdx < ctx->pieceCount; pieceIdx++) {
+        AssOverlayPiece* p = &ctx->pieces[pieceIdx];
+        p->sameAs = -1;
+        // Linear probing from a Fibonacci hash of the pointer. At most half the slots are ever
+        // used, so the probe always ends on either a match or an empty slot.
+        uint32_t slot = (uint32_t) (((uint64_t) (uintptr_t) p->bitmap * 0x9E3779B97F4A7C15ULL) >> 32) & mask;
+        for (; ctx->bitmapSlots[slot] >= 0; slot = (slot + 1) & mask) {
+            const AssOverlayPiece* q = &ctx->pieces[ctx->bitmapSlots[slot]];
+            if (q->bitmap == p->bitmap && q->w == p->w && q->h == p->h && q->stride == p->stride) {
+                p->sameAs = ctx->bitmapSlots[slot];
+                break;
+            }
+        }
+        // The slot keeps the latest copy, so the next repeat links to the closest one.
+        ctx->bitmapSlots[slot] = pieceIdx;
     }
-
-    const int count = ctx->pieceCount;
-    for (int pieceIdx = 0; pieceIdx < count; pieceIdx++) {
-        stbrp_rect* r = &ctx->packRects[pieceIdx];
-        r->id = pieceIdx;
-        r->w = ctx->pieces[pieceIdx].w;
-        r->h = ctx->pieces[pieceIdx].h;
-    }
-    // Height is the max texture size: the skyline keeps the packing as low as it can, so the
-    // actually used height is read back from the result instead of guessed up front.
-    stbrp_context packer;
-    stbrp_init_target(&packer, packW, ctx->maxAtlasSize, ctx->packNodes, packW);
-    stbrp_setup_heuristic(&packer, STBRP_HEURISTIC_Skyline_BF_sortHeight);
-    if (!stbrp_pack_rects(&packer, ctx->packRects, count)) return false;
-
-    int usedW = 0, usedH = 0;
-    for (int pieceIdx = 0; pieceIdx < count; pieceIdx++) {
-        const stbrp_rect* r = &ctx->packRects[pieceIdx];
-        AssOverlayPiece* p = &ctx->pieces[r->id];
-        p->atlasX = r->x;
-        p->atlasY = r->y;
-        if (r->x + r->w > usedW) usedW = r->x + r->w;
-        if (r->y + r->h > usedH) usedH = r->y + r->h;
-    }
-
-    if (!assOverlayEnsurePage(ctx, 0)) return false;
-    AssOverlayPage* pg = &ctx->pages[0];
-    pg->firstPiece = 0;
-    pg->pieceCount = count;
-    pg->usedW = usedW;
-    pg->usedH = usedH;
-    ctx->pageCount = 1;
-    return true;
 }
 
-// Fallback when one page isn't enough: shelf-packs pieces in their ORIGINAL list order, spilling
-// into as many pages as needed. Each page is drawn in its own call, so overlapping same-position
-// shadow/border/fill layers are only painted in libass's order if every page holds a contiguous run
-// of the list - which rules out sorting across pages. Shelves are packW wide.
-static void assOverlayPackInOrder(AssOverlayContext* ctx, int packW) {
-    int page = -1;
-    int shelfX = 0, shelfY = 0, shelfH = 0;
-    int placedCount = 0;
-    for (; placedCount < ctx->pieceCount; placedCount++) {
-        AssOverlayPiece* p = &ctx->pieces[placedCount];
-        if (page >= 0 && shelfX + p->w > packW) {
-            shelfY += shelfH;
-            shelfX = 0;
-            shelfH = 0;
-        }
-        if (page < 0 || shelfY + p->h > ctx->maxAtlasSize) {
-            // Current page full (or none yet): start a new one at the current list position.
-            if (!assOverlayEnsurePage(ctx, page + 1)) break; // OOM: draw what was placed so far
-            page++;
-            ctx->pages[page].firstPiece = placedCount;
-            ctx->pages[page].pieceCount = 0;
-            ctx->pages[page].usedW = 0;
-            ctx->pages[page].usedH = 0;
-            shelfX = shelfY = shelfH = 0;
-        }
+// Texels pieces[pieceIdx] adds to a page whose run starts at `first`: none if it repeats a bitmap
+// already in the run.
+static inline long long assOverlayRunTexels(const AssOverlayContext* ctx, int first, int pieceIdx) {
+    const AssOverlayPiece* p = &ctx->pieces[pieceIdx];
+    return p->sameAs >= first ? 0 : (long long) p->w * p->h;
+}
 
-        AssOverlayPage* pg = &ctx->pages[page];
-        p->atlasX = shelfX;
-        p->atlasY = shelfY;
-        pg->pieceCount++;
+// Tallest first, then widest: the skyline then fills the space beside tall pieces with shorter
+// ones. Ties keep list order, so the layout is deterministic.
+static int assOverlayCompareTallestFirst(const void* a, const void* b) {
+    const AssOverlayPackEntry* p = (const AssOverlayPackEntry*) a;
+    const AssOverlayPackEntry* q = (const AssOverlayPackEntry*) b;
+    if (p->h != q->h) return q->h - p->h;
+    if (p->w != q->w) return q->w - p->w;
+    return p->piece - q->piece;
+}
 
-        shelfX += p->w;
-        if (p->h > shelfH) shelfH = p->h;
-        if (shelfX > pg->usedW) pg->usedW = shelfX;
-        if (shelfY + shelfH > pg->usedH) pg->usedH = shelfY + shelfH;
+// Page width: aim for a roughly square page (like mpv's packer) instead of packing out to maxSize.
+// maxSize is GL_MAX_TEXTURE_SIZE (often 16384), so a page that wide turns a row of large signs into
+// a ~16384 x 1080 upload per changed frame. Rounded to a power of two so the page texture's size
+// stays stable across frames instead of reallocating.
+static int assOverlayPageWidth(long long area, int widest, int maxSize) {
+    int width = ASS_OVERLAY_MIN_PACK_WIDTH;
+    while ((long long) width * width < area && width < maxSize) width *= 2;
+    while (width < widest && width < maxSize) width *= 2;
+    return width < maxSize ? width : maxSize;
+}
+
+// A page's skyline is the top edge of everything packed into it so far: node i covers the columns
+// [nodes[i].x, nodes[i + 1].x) up to height nodes[i].y, nodes[count] marks the page's right edge,
+// and neighboring nodes always differ in height.
+//
+// Finds where a w x h piece rests lowest - then leftmost - with its left edge on a node and its top
+// at most maxH. Returns that node (and the resting height), or -1 if the piece doesn't fit.
+static int assOverlaySkyFind(const AssOverlaySkyNode* nodes, int count, int pageW, int maxH, int w, int h, int* restY) {
+    int bestNode = -1;
+    int bestY = maxH - h + 1; // resting this high or higher would overflow the page
+    for (int nodeIdx = 0; nodeIdx < count && nodes[nodeIdx].x + w <= pageW; nodeIdx++) {
+        // The piece rests on the highest node under it. Later candidates are further right, so only
+        // a strictly lower one can win: stop scanning a candidate as soon as it can't.
+        const int right = nodes[nodeIdx].x + w;
+        int y = 0;
+        for (int k = nodeIdx; nodes[k].x < right && y < bestY; k++) {
+            if (nodes[k].y > y) y = nodes[k].y;
+        }
+        if (y < bestY) {
+            bestY = y;
+            bestNode = nodeIdx;
+        }
     }
+    *restY = bestY;
+    return bestNode;
+}
 
-    ctx->pageCount = page + 1;
-    ctx->pieceCount = placedCount;
+// Raises the skyline under a piece just placed on node `nodeIdx`: the columns it covers become one
+// node at `top`, and the last node it only partly covers keeps its uncovered remainder.
+static void assOverlaySkyPlace(AssOverlaySkyNode* nodes, int* count, int nodeIdx, int w, int top) {
+    const int right = nodes[nodeIdx].x + w;
+    int end = nodeIdx + 1; // first node starting at or past the piece's right edge
+    while (nodes[end].x < right) end++;
+    const bool partial = nodes[end].x > right;
+    const int restY = nodes[end - 1].y;
+
+    // Nodes [nodeIdx, end) collapse into nodeIdx, plus the remainder. The right edge marker moves too.
+    const int kept = partial ? 2 : 1;
+    memmove(&nodes[nodeIdx + kept], &nodes[end], (size_t) (*count + 1 - end) * sizeof(AssOverlaySkyNode));
+    *count += kept - (end - nodeIdx);
+    nodes[nodeIdx].y = top;
+    if (partial) {
+        nodes[nodeIdx + 1] = (AssOverlaySkyNode) {right, restY}; // below the piece's top: no merge
+    } else if (nodeIdx + 1 < *count && nodes[nodeIdx + 1].y == top) {
+        memmove(&nodes[nodeIdx + 1], &nodes[nodeIdx + 2], (size_t) (*count - nodeIdx - 1) * sizeof(AssOverlaySkyNode));
+        (*count)--;
+    }
+    if (nodeIdx > 0 && nodes[nodeIdx - 1].y == top) {
+        memmove(&nodes[nodeIdx], &nodes[nodeIdx + 1], (size_t) (*count - nodeIdx) * sizeof(AssOverlaySkyNode));
+        (*count)--;
+    }
+}
+
+// Packs the run pieces[first, end) into one page: tallest first, each at the lowest then leftmost
+// spot the skyline offers, and each distinct bitmap only once - a repeat of a bitmap already in the
+// run samples that copy's texels. Placement order is free because only pieces[] order (libass list
+// order) decides the paint order. Returns false if the run doesn't fit in one max-size page.
+static bool assOverlayPackPage(AssOverlayContext* ctx, int first, int end, int* usedW, int* usedH) {
+    long long area = 0;
+    int widest = 0;
+    for (int pieceIdx = first; pieceIdx < end; pieceIdx++) {
+        area += assOverlayRunTexels(ctx, first, pieceIdx);
+        if (ctx->pieces[pieceIdx].w > widest) widest = ctx->pieces[pieceIdx].w;
+    }
+    const int pageW = assOverlayPageWidth(area, widest, ctx->maxAtlasSize);
+
+    // Height is the max texture size: the skyline keeps the packing as low as it can, so the
+    // actually used height is read back from the result instead of guessed up front.
+    AssOverlaySkyNode* nodes = ctx->skyNodes;
+    int nodeCount = 1;
+    nodes[0] = (AssOverlaySkyNode) {0, 0};
+    nodes[1] = (AssOverlaySkyNode) {pageW, 0};
+    *usedW = 0;
+    *usedH = 0;
+    for (int orderIdx = 0; orderIdx < ctx->pieceCount; orderIdx++) {
+        const int pieceIdx = ctx->packOrder[orderIdx].piece;
+        AssOverlayPiece* p = &ctx->pieces[pieceIdx];
+        if (pieceIdx < first || pieceIdx >= end || p->sameAs >= first) continue;
+        int y;
+        const int nodeIdx = assOverlaySkyFind(nodes, nodeCount, pageW, ctx->maxAtlasSize, p->w, p->h, &y);
+        if (nodeIdx < 0) return false;
+        p->atlasX = nodes[nodeIdx].x;
+        p->atlasY = y;
+        assOverlaySkyPlace(nodes, &nodeCount, nodeIdx, p->w, y + p->h);
+        if (p->atlasX + p->w > *usedW) *usedW = p->atlasX + p->w;
+        if (y + p->h > *usedH) *usedH = y + p->h;
+    }
+    // In list order, so a repeat's copy (itself possibly a repeat) is always placed already.
+    for (int pieceIdx = first; pieceIdx < end; pieceIdx++) {
+        AssOverlayPiece* p = &ctx->pieces[pieceIdx];
+        if (p->sameAs < first) continue;
+        p->atlasX = ctx->pieces[p->sameAs].atlasX;
+        p->atlasY = ctx->pieces[p->sameAs].atlasY;
+    }
+    return true;
 }
 
 // Collects `image`'s pieces into ctx->pieces[] in libass list order (which is also the draw
 // order), then assigns their atlas placement. Only computes placement; pixels are copied per page
 // in assOverlayUpload.
+//
+// Every page holds the longest run of the remaining list that assOverlayPackPage fits into it; a
+// frame that fits one page is just the case where the first run is the whole list. Each page is
+// drawn in its own call, so overlapping shadow/border/fill layers are only painted in libass's order
+// if every page holds a contiguous run of the list - which rules out spreading a run across pages.
 //
 // Pieces are packed edge to edge, with no padding: they are always drawn 1:1 with GL_NEAREST, so a
 // fragment only ever samples a texel inside its own piece.
@@ -460,38 +547,24 @@ static void assOverlayPack(AssOverlayContext* ctx, ASS_Image* image) {
     ctx->pieceCount = 0;
     ctx->pageCount = 0;
 
-    // Atlas width: aim for a roughly square atlas (like mpv's packer) instead of packing out to
-    // maxSize. maxSize is GL_MAX_TEXTURE_SIZE (often 16384), so an atlas that wide turns a row of
-    // large signs into a ~16384 x 1080 upload per changed frame. Rounded to a power of two so the
-    // page texture's size stays stable across frames instead of reallocating.
     int count = 0;
-    long long area = 0;
-    int widest = 0;
     for (ASS_Image* img = image; img != NULL; img = img->next) {
-        if (assOverlayIsEmpty(img)) continue;
-        count++;
-        area += (long long) img->w * img->h;
-        if (img->w > widest) widest = img->w;
+        if (!assOverlayIsEmpty(img)) count++;
     }
     if (count == 0) return;
     if (!assOverlayEnsurePieces(ctx, count)) return; // OOM: nothing drawn this frame
 
-    int maxSize = ctx->maxAtlasSize;
-    int packW = ASS_OVERLAY_MIN_PACK_WIDTH;
-    while ((long long) packW * packW < area && packW < maxSize) packW *= 2;
-    while (packW < widest && packW < maxSize) packW *= 2;
-    if (packW > maxSize) packW = maxSize;
-
+    const int maxSize = ctx->maxAtlasSize;
     int pieceCount = 0;
     for (ASS_Image* img = image; img != NULL; img = img->next) {
         if (assOverlayIsEmpty(img)) continue;
-        if (img->w > packW || img->h > maxSize) {
+        if (img->w > maxSize || img->h > maxSize) {
             // Single piece larger than a whole page: cannot place (needs a frame bigger than the
             // GPU's max texture size, so not reachable in practice).
             LOGW("dropping %dx%d image: larger than max atlas size %d", img->w, img->h, maxSize);
             continue;
         }
-        AssOverlayPiece* p = &ctx->pieces[pieceCount++];
+        AssOverlayPiece* p = &ctx->pieces[pieceCount];
         p->dstX = img->dst_x;
         p->dstY = img->dst_y;
         p->w = img->w;
@@ -499,14 +572,49 @@ static void assOverlayPack(AssOverlayContext* ctx, ASS_Image* image) {
         p->color = img->color;
         p->bitmap = img->bitmap;
         p->stride = img->stride;
+        ctx->packOrder[pieceCount] = (AssOverlayPackEntry) {img->h, img->w, pieceCount};
+        pieceCount++;
     }
     ctx->pieceCount = pieceCount;
     if (pieceCount == 0) return;
+    assOverlayLinkRepeats(ctx);
+    // Sorted once for all pages: each page packs its run's pieces in this order.
+    qsort(ctx->packOrder, (size_t) pieceCount, sizeof(AssOverlayPackEntry), assOverlayCompareTallestFirst);
 
-    if (!assOverlayPackSkyline(ctx, packW)) {
-        LOGW("%d pieces (%lld texels) don't fit one %dx%d page (or OOM): falling back to multi-page in-order packing",
-            pieceCount, area, packW, maxSize);
-        assOverlayPackInOrder(ctx, packW);
+    const long long pageArea = (long long) maxSize * maxSize;
+    int first = 0;
+    while (first < pieceCount) {
+        // Start from the longest run whose distinct bitmaps don't add up to more than a whole page.
+        long long runArea = assOverlayRunTexels(ctx, first, first);
+        int end = first + 1;
+        while (end < pieceCount && runArea + assOverlayRunTexels(ctx, first, end) <= pageArea) {
+            runArea += assOverlayRunTexels(ctx, first, end);
+            end++;
+        }
+        int usedW, usedH;
+        while (!assOverlayPackPage(ctx, first, end, &usedW, &usedH)) {
+            // Packing never fills a page completely: retry without the run's last 1/8 of texels (and
+            // at least its last piece). A lone piece always fits, as oversized ones were dropped above.
+            const long long target = runArea - runArea / 8;
+            runArea = assOverlayRunTexels(ctx, first, first);
+            int shorter = first + 1;
+            while (shorter < end - 1 && runArea + assOverlayRunTexels(ctx, first, shorter) <= target) {
+                runArea += assOverlayRunTexels(ctx, first, shorter);
+                shorter++;
+            }
+            end = shorter;
+        }
+
+        if (!assOverlayEnsurePage(ctx, ctx->pageCount)) { // OOM: draw the pages packed so far
+            ctx->pieceCount = first;
+            return;
+        }
+        AssOverlayPage* pg = &ctx->pages[ctx->pageCount++];
+        pg->firstPiece = first;
+        pg->pieceCount = end - first;
+        pg->usedW = usedW;
+        pg->usedH = usedH;
+        first = end;
     }
 }
 
@@ -516,6 +624,7 @@ static void assOverlayFillPage(const AssOverlayContext* ctx, const AssOverlayPag
     const size_t stride = (size_t) pg->usedW;
     for (int pieceIdx = pg->firstPiece; pieceIdx < pg->firstPiece + pg->pieceCount; pieceIdx++) {
         const AssOverlayPiece* p = &ctx->pieces[pieceIdx];
+        if (p->sameAs >= pg->firstPiece) continue; // an earlier copy on this page already holds these texels
         unsigned char* dst = buf + (size_t) p->atlasY * stride + p->atlasX;
         const unsigned char* src = p->bitmap;
         for (int row = 0; row < p->h; row++) {
@@ -584,7 +693,7 @@ static void assOverlayUpload(AssOverlayContext* ctx) {
             ctx->profUsedArea += (long long) bytes;
             ctx->profCapArea += (long long) pg->capW * pg->capH;
             for (int i = pg->firstPiece; i < pg->firstPiece + pg->pieceCount; i++)
-                ctx->profPieceArea += (long long) ctx->pieces[i].w * ctx->pieces[i].h;
+                ctx->profPieceArea += assOverlayRunTexels(ctx, pg->firstPiece, i);
         )
 
         bool uploaded = false;
