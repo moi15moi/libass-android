@@ -234,14 +234,6 @@ void assAtlasFillPage(const AssAtlas* atlas, const AssAtlasPage* page, unsigned 
     }
 }
 
-long long assAtlasPageTexels(const AssAtlas* atlas, const AssAtlasPage* page) {
-    long long texels = 0;
-    for (int i = page->firstPiece; i < page->firstPiece + page->pieceCount; i++) {
-        texels += runTexels(atlas, page->firstPiece, i);
-    }
-    return texels;
-}
-
 void assAtlasTruncate(AssAtlas* atlas, int pageCount) {
     if (pageCount >= atlas->pageCount) return;
     atlas->pieceCount = atlas->pages[pageCount].firstPiece;

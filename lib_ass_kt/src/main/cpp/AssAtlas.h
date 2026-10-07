@@ -59,9 +59,6 @@ bool assAtlasMovePieces(AssAtlas* atlas, const ASS_Image* images);
 // between the pieces are left as they are: they are never sampled.
 void assAtlasFillPage(const AssAtlas* atlas, const AssAtlasPage* page, unsigned char* buf);
 
-// The bitmap texels a page stores.
-long long assAtlasPageTexels(const AssAtlas* atlas, const AssAtlasPage* page);
-
 // Drops the pages from `pageCount` on, with their pieces.
 void assAtlasTruncate(AssAtlas* atlas, int pageCount);
 

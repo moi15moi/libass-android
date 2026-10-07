@@ -6,7 +6,6 @@
 #include <stdint.h>
 
 #include "AssAtlas.h"
-#include "AssOverlayProfile.h"
 #include "GLES3/gl3.h"
 
 // The texture holding one atlas page. Its capacity only grows, so it is rarely reallocated.
@@ -56,7 +55,7 @@ void assOverlayGlRelease(AssOverlayGl* gl);
 
 // Uploads every atlas page into its texture. Returns how many pages were uploaded: fewer than the
 // atlas has only on OOM.
-int assOverlayGlUpload(AssOverlayGl* gl, const AssAtlas* atlas, AssOverlayProfile* profile);
+int assOverlayGlUpload(AssOverlayGl* gl, const AssAtlas* atlas);
 
 // Rebuilds the quads that draw the atlas pieces onto a frameW x frameH frame. Returns false on OOM.
 bool assOverlayGlSetQuads(AssOverlayGl* gl, const AssAtlas* atlas, int frameW, int frameH);

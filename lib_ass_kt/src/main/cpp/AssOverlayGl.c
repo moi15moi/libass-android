@@ -198,9 +198,8 @@ static bool ensureStaging(AssOverlayGl* gl, size_t bytes) {
 // Writes the bound page's bitmaps straight into the mapped PBO - the one unavoidable CPU copy - and
 // lets the driver move them into the texture GPU-side, asynchronously. Returns false if the PBO can't
 // be mapped.
-static bool uploadThroughPbo(AssOverlayGl* gl, const AssAtlas* atlas, const AssAtlasPage* page, AssOverlayProfile* profile) {
+static bool uploadThroughPbo(AssOverlayGl* gl, const AssAtlas* atlas, const AssAtlasPage* page) {
     const size_t bytes = (size_t) page->usedW * page->usedH;
-    long long start = assProfileStart();
     if (gl->pbo == 0) glGenBuffers(1, &gl->pbo);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, gl->pbo);
     if (gl->pboFence != 0) {
@@ -217,19 +216,14 @@ static bool uploadThroughPbo(AssOverlayGl* gl, const AssAtlas* atlas, const AssA
     // Unsynchronized: the fence already guarantees the GPU is done with the buffer.
     unsigned char* mapped = (unsigned char*) glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, (GLsizeiptr) bytes,
         GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
-    assProfileStop(profile, ASS_PROFILE_MAP, start);
     bool uploaded = false;
     if (mapped != NULL) {
-        start = assProfileStart();
         assAtlasFillPage(atlas, page, mapped);
-        assProfileStop(profile, ASS_PROFILE_FILL, start);
-        start = assProfileStart();
         if (glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER)) {
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, page->usedW, page->usedH, textureFormat(gl), GL_UNSIGNED_BYTE, (const void*) 0);
             gl->pboFence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
             uploaded = true;
         }
-        assProfileStop(profile, ASS_PROFILE_UPLOAD, start);
     }
     // Unbound before any client-memory upload, ours or media3's.
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
@@ -238,34 +232,21 @@ static bool uploadThroughPbo(AssOverlayGl* gl, const AssAtlas* atlas, const AssA
 
 // Copies the bound page's bitmaps into the staging buffer and uploads them from there. Returns false
 // on OOM.
-static bool uploadFromStaging(AssOverlayGl* gl, const AssAtlas* atlas, const AssAtlasPage* page, AssOverlayProfile* profile) {
+static bool uploadFromStaging(AssOverlayGl* gl, const AssAtlas* atlas, const AssAtlasPage* page) {
     if (!ensureStaging(gl, (size_t) page->usedW * page->usedH)) return false;
-    long long start = assProfileStart();
     assAtlasFillPage(atlas, page, gl->staging);
-    assProfileStop(profile, ASS_PROFILE_FILL, start);
-    start = assProfileStart();
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, page->usedW, page->usedH, textureFormat(gl), GL_UNSIGNED_BYTE, gl->staging);
-    assProfileStop(profile, ASS_PROFILE_UPLOAD, start);
     return true;
 }
 
-int assOverlayGlUpload(AssOverlayGl* gl, const AssAtlas* atlas, AssOverlayProfile* profile) {
+int assOverlayGlUpload(AssOverlayGl* gl, const AssAtlas* atlas) {
     if (!ensureTextures(gl, atlas->pageCount)) return 0;
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     int pageIdx = 0;
     for (; pageIdx < atlas->pageCount; pageIdx++) {
         const AssAtlasPage* page = &atlas->pages[pageIdx];
-        AssOverlayTexture* texture = &gl->textures[pageIdx];
-        const long long start = assProfileStart();
-        bindPageTexture(gl, texture, page);
-        assProfileStop(profile, ASS_PROFILE_TEXTURE_ALLOC, start);
-        if (ASS_OVERLAY_PROFILING) {
-            profile->bitmapTexels += assAtlasPageTexels(atlas, page);
-            profile->usedTexels += (long long) page->usedW * page->usedH;
-            profile->capacityTexels += (long long) texture->capW * texture->capH;
-        }
-        const bool uploaded = (gl->isGles3 && uploadThroughPbo(gl, atlas, page, profile)) ||
-            uploadFromStaging(gl, atlas, page, profile);
+        bindPageTexture(gl, &gl->textures[pageIdx], page);
+        const bool uploaded = (gl->isGles3 && uploadThroughPbo(gl, atlas, page)) || uploadFromStaging(gl, atlas, page);
         if (!uploaded) break; // OOM
     }
     glBindTexture(GL_TEXTURE_2D, 0);

@@ -1,13 +1,11 @@
 #include "AssOverlay.h"
 
 #include <stdlib.h>
-#include <string.h>
 #include <time.h>
 
 #include "AssAtlas.h"
 #include "AssOverlayGl.h"
 #include "AssOverlayLog.h"
-#include "AssOverlayProfile.h"
 
 // ============================================================================
 // EFFECTS_ATLAS: draws subtitles onto the video frames of media3's GlEffect path.
@@ -37,7 +35,6 @@ typedef struct {
     AssAtlas atlas;
     // The video frame's pixel size: libass's storage and frame size, and the GL viewport.
     int frameW, frameH;
-    AssOverlayProfile profile;
 } AssOverlay;
 
 static long long nowMs(void) {
@@ -70,46 +67,19 @@ static AssOverlay* createOverlay(void) {
 // Brings the atlas and its quads in line with libass's latest output. changed == 0 means the same
 // content as last time, so everything is reused as is.
 static void updateAtlas(AssOverlay* overlay, const ASS_Image* images, int changed) {
-    AssAtlas* atlas = &overlay->atlas;
-    AssOverlayProfile* profile = &overlay->profile;
-    memset(profile, 0, sizeof(*profile));
     if (changed == 0) return;
+    AssAtlas* atlas = &overlay->atlas;
 
     // changed == 1 means only positions moved: the uploaded pages stay valid if the bitmaps line up.
     const bool moved = changed == 1 && atlas->pieceCount > 0 && assAtlasMovePieces(atlas, images);
     if (!moved) {
-        const long long start = assProfileStart();
         assAtlasPack(atlas, images);
-        assProfileStop(profile, ASS_PROFILE_PACK, start);
         if (atlas->pieceCount == 0) return;
-        const int uploadedPages = assOverlayGlUpload(&overlay->gl, atlas, profile);
+        const int uploadedPages = assOverlayGlUpload(&overlay->gl, atlas);
         assAtlasTruncate(atlas, uploadedPages); // fewer only on OOM
         if (atlas->pieceCount == 0) return;
     }
-    const long long start = assProfileStart();
     if (!assOverlayGlSetQuads(&overlay->gl, atlas, overlay->frameW, overlay->frameH)) assAtlasTruncate(atlas, 0);
-    assProfileStop(profile, ASS_PROFILE_VERTICES, start);
-}
-
-static void logSlowFrame(const AssOverlay* overlay, long long timeMs, int changed, long long renderMs, long long updateMs) {
-    const AssAtlas* atlas = &overlay->atlas;
-    LOGW("timeMs=%lld (changed=%d): ass_render_frame %lldms, atlas update %lldms (pieces=%d, pages=%d)",
-        timeMs, changed, renderMs, updateMs, atlas->pieceCount, atlas->pageCount);
-    if (!ASS_OVERLAY_PROFILING) return;
-
-    const AssOverlayProfile* profile = &overlay->profile;
-    int usedW = 0, usedH = 0, capW = 0, capH = 0; // of the first page
-    if (atlas->pageCount > 0) {
-        usedW = atlas->pages[0].usedW;
-        usedH = atlas->pages[0].usedH;
-        capW = overlay->gl.textures[0].capW;
-        capH = overlay->gl.textures[0].capH;
-    }
-    LOGW("  breakdown us: pack=%lld texAlloc=%lld map=%lld fill=%lld unmap+texSubImage=%lld vertices=%lld | "
-         "area: pieces=%lld used=%lld cap=%lld (page0 %dx%d used, %dx%d cap)",
-        profile->stageUs[ASS_PROFILE_PACK], profile->stageUs[ASS_PROFILE_TEXTURE_ALLOC], profile->stageUs[ASS_PROFILE_MAP],
-        profile->stageUs[ASS_PROFILE_FILL], profile->stageUs[ASS_PROFILE_UPLOAD], profile->stageUs[ASS_PROFILE_VERTICES],
-        profile->bitmapTexels, profile->usedTexels, profile->capacityTexels, usedW, usedH, capW, capH);
 }
 
 // Called for every video frame, on the GL thread, from AssRender.kt's drawOverlayFrame (itself called
@@ -141,7 +111,8 @@ jlong nativeAssOverlayDraw(JNIEnv* env, jclass clazz, jlong handle, jlong render
     updateAtlas(overlay, images, changed);
     const long long updated = nowMs();
     if (updated - start >= ASS_OVERLAY_SLOW_LOG_MS) {
-        logSlowFrame(overlay, (long long) timeMs, changed, rendered - start, updated - rendered);
+        LOGW("timeMs=%lld (changed=%d): ass_render_frame %lldms, atlas update %lldms (pieces=%d, pages=%d)",
+            (long long) timeMs, changed, rendered - start, updated - rendered, overlay->atlas.pieceCount, overlay->atlas.pageCount);
     }
 
     // The atlas outlives changed == 0 frames, but each call's FBO wraps a new video frame that doesn't
