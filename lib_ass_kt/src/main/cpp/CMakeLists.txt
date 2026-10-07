@@ -24,7 +24,7 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 # System.loadLibrary() and pass the name of the library defined here;
 # for GameActivity/NativeActivity derived applications, the same library name must be
 # used in the AndroidManifest.xml file.
-add_library(${CMAKE_PROJECT_NAME} SHARED AssKt.c AssOverlay.c ass_gl_overlay.cpp)
+add_library(${CMAKE_PROJECT_NAME} SHARED AssKt.c AssOverlay.c AssOverlayGl.c AssAtlas.c AssSkyline.c ass_gl_overlay.cpp)
 # Add these two lines.
 find_package(lib_ass REQUIRED CONFIG)
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME "asskt")
