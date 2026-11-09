@@ -1,0 +1,28 @@
+[submodule "lib_ass/src/main/cpp/third_party/libass"]
+	path = lib_ass/src/main/cpp/third_party/libass
+	url = https://github.com/libass/libass.git
+	ignore = untracked
+[submodule "lib_ass/src/main/cpp/third_party/expat"]
+	path = lib_ass/src/main/cpp/third_party/expat
+	url = https://github.com/libexpat/libexpat.git
+	ignore = untracked
+[submodule "lib_ass/src/main/cpp/third_party/fontconfig"]
+	path = lib_ass/src/main/cpp/third_party/fontconfig
+	url = https://gitlab.freedesktop.org/fontconfig/fontconfig.git
+	ignore = untracked
+[submodule "lib_ass/src/main/cpp/third_party/freetype"]
+	path = lib_ass/src/main/cpp/third_party/freetype
+	url = https://gitlab.freedesktop.org/freetype/freetype.git
+	ignore = untracked
+[submodule "lib_ass/src/main/cpp/third_party/fribidi"]
+	path = lib_ass/src/main/cpp/third_party/fribidi
+	url = https://github.com/fribidi/fribidi.git
+	ignore = untracked
+[submodule "lib_ass/src/main/cpp/third_party/harfbuzz"]
+	path = lib_ass/src/main/cpp/third_party/harfbuzz
+	url = https://github.com/harfbuzz/harfbuzz.git
+	ignore = untracked
+[submodule "lib_ass/src/main/cpp/third_party/unibreak"]
+	path = lib_ass/src/main/cpp/third_party/unibreak
+	url = https://github.com/adah1972/libunibreak.git
+	ignore = untracked
