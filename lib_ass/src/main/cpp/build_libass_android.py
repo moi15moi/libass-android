@@ -73,7 +73,7 @@ class ToolchainBuildEnv:
     RANLIB: str
     STRIP: str
     LDFLAGS: str
-    PREFIX: str
+    DESTDIR: str
     PKG_CONFIG_LIBDIR: str
 
 
@@ -106,7 +106,6 @@ def create_meson_cross_file(target: Target, toolchain_build_env: ToolchainBuildE
     """
     meson_cross_file_content = dedent(f"""
     [built-in options]
-    prefix = {meson_string(toolchain_build_env.PREFIX)}
     wrap_mode = 'nodownload'
     c_link_args = {meson_string(toolchain_build_env.LDFLAGS)}
     cpp_link_args = {meson_string(toolchain_build_env.LDFLAGS)}
@@ -130,6 +129,7 @@ def create_meson_cross_file(target: Target, toolchain_build_env: ToolchainBuildE
 
     [properties]
     pkg_config_libdir = {meson_string(toolchain_build_env.PKG_CONFIG_LIBDIR)}
+    sys_root = {meson_string(toolchain_build_env.DESTDIR)}
     """)
 
     # The file is only rewritten when its content changes, because Meson
@@ -162,6 +162,7 @@ def prepare_autotools_env(toolchain_build_env: ToolchainBuildEnv, debug: bool) -
         "STRIP": toolchain_build_env.STRIP,
         "LDFLAGS": toolchain_build_env.LDFLAGS,
         "PKG_CONFIG_LIBDIR": toolchain_build_env.PKG_CONFIG_LIBDIR,
+        "PKG_CONFIG_SYSROOT_DIR": toolchain_build_env.DESTDIR,
     })
 
     if debug:
@@ -293,7 +294,7 @@ def build_project(
     So if the compiler (NDK, minSdk) or a configure option changes, reconfigure must be True.
 
     Debug and release builds use different build directories, so switching between them doesn't need reconfigure.
-    Both install to the same prefix (build_dir/{abi}), so the last build is the one used.
+    Both install to the same DESTDIR (build_dir/{abi}), so the last build is the one used.
 
     Parameters:
         project: Project to build.
@@ -330,7 +331,11 @@ def build_project(
             )
 
         subprocess.run(["meson", "compile", "-C", str(project_build_dir)], check=True, encoding="utf-8")
-        subprocess.run(["meson", "install", "-C", str(project_build_dir)], check=True, encoding="utf-8")
+        subprocess.run(
+            ["meson", "install", "-C", str(project_build_dir), "--destdir", toolchain_build_env.DESTDIR],
+            check=True,
+            encoding="utf-8"
+        )
     elif project.build_system == BuildSystem.AUTOTOOLS:
         env_autotools = prepare_autotools_env(toolchain_build_env, debug)
         project_build_dir.mkdir(exist_ok=True)
@@ -346,7 +351,6 @@ def build_project(
                 [
                     str(project.source_dir.joinpath("configure")),
                     f"--host={target.triple}",
-                    f"--prefix={toolchain_build_env.PREFIX}",
                     "--with-pic",
                 ] + build_flags + default_library,
                 cwd=project_build_dir,
@@ -357,7 +361,13 @@ def build_project(
 
         jobs = f"-j{os.cpu_count() or 1}"
         subprocess.run(["make", jobs], cwd=project_build_dir, check=True, env=env_autotools, encoding="utf-8")
-        subprocess.run(["make", jobs, "install"], cwd=project_build_dir, check=True, env=env_autotools, encoding="utf-8")
+        subprocess.run(
+            ["make", jobs, "install", f"DESTDIR={toolchain_build_env.DESTDIR}"],
+            cwd=project_build_dir,
+            check=True,
+            env=env_autotools,
+            encoding="utf-8"
+        )
     else:
         raise ValueError(f"The build system {project.build_system} isn't implemented.")
 
@@ -443,10 +453,10 @@ def main() -> None:
         bootstrap_project(project, need_reconfigure)
 
     for target in targets:
-        prefix_dir = build_dir.joinpath(target.abi)
-        if prefix_dir.is_dir():
-            shutil.rmtree(prefix_dir)
-        prefix_dir.mkdir()
+        destdir = build_dir.joinpath(target.abi)
+        if destdir.is_dir():
+            shutil.rmtree(destdir)
+        destdir.mkdir()
 
         # See https://developer.android.com/ndk/guides/other_build_systems#autoconf
         toolchain_build_env = ToolchainBuildEnv(
@@ -458,8 +468,8 @@ def main() -> None:
             str(toolchain_path.joinpath("bin", "llvm-ranlib")),
             str(toolchain_path.joinpath("bin", "llvm-strip")),
             "-Wl,-z,max-page-size=16384", # Android require 16 KB page sizes: https://developer.android.com/guide/practices/page-sizes
-            str(prefix_dir),
-            str(prefix_dir.joinpath("lib", "pkgconfig"))
+            str(destdir),
+            str(destdir.joinpath("usr", "local", "lib", "pkgconfig"))
         )
         meson_cross_file = create_meson_cross_file(target, toolchain_build_env, build_dir)
 
@@ -471,7 +481,7 @@ def main() -> None:
     include_dir = build_dir.joinpath("include")
     if include_dir.exists():
         shutil.rmtree(include_dir)
-    shutil.copytree(build_dir.joinpath(targets[0].abi, "include"), include_dir)
+    shutil.copytree(build_dir.joinpath(targets[0].abi, "usr", "local", "include"), include_dir)
 
 
 if __name__ == "__main__":

@@ -47,7 +47,8 @@ python3 lib_ass/src/main/cpp/build_libass_android.py --sdk-path <Android SDK pat
 ## Output
 
 The output goes to `lib_ass/src/main/cpp/build_native_lib/`:
-- `<abi>/lib/*.so`: the shared libraries of each ABI, imported by `CMakeLists.txt`.
+- `<abi>/usr/local/lib/*.so`: the shared libraries of each ABI, imported by `CMakeLists.txt`.
+  Each project is installed in the default prefix (`/usr/local`) inside the DESTDIR `<abi>/`.
 - `include/`: the headers, exposed by the Prefab package `ass` (see `lib_ass/build.gradle.kts`).
 
 The other directories in `build_native_lib/` are the build directories of each project, kept between runs so only the changed files are recompiled.

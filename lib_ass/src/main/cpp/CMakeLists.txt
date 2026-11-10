@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 4.2.0)
 project("lib_ass")
 
-set(NATIVE_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/build_native_lib/${ANDROID_ABI}/lib)
+set(NATIVE_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/build_native_lib/${ANDROID_ABI}/usr/local/lib)
 
 if(NOT EXISTS ${NATIVE_LIB_DIR}/libass.so)
     # ANDROID_NDK is <Android SDK path>/ndk/<ndkVersion>, the same layout build_libass_android.py expects.
