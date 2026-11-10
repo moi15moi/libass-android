@@ -9,10 +9,10 @@ plugins {
 android {
     namespace = "io.github.peerless2012.ass.kt"
     compileSdk = 36
-    ndkVersion = "28.1.13356709"
+    ndkVersion = libs.versions.ndkVersion.get()
 
     defaultConfig {
-        minSdk = 23
+        minSdk = libs.versions.minSdk.get().toInt()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
         externalNativeBuild {
@@ -69,7 +69,7 @@ kotlin {
 }
 
 dependencies {
-    compileOnly(project(":lib_ass"))
+    implementation(project(":lib_ass"))
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

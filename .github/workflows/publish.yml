@@ -13,10 +13,11 @@ jobs:
       with:
         submodules: recursive
 
-    - name: Run setup-libraries composite action
-      uses: ./lib_ass/src/main/cpp/libass-cmake/.github/actions/setup-libraries
-      with:
-        libass-cmake-path: ${{ github.workspace }}/lib_ass/src/main/cpp/libass-cmake
+    - name: Install native build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y autoconf automake libtool gperf gettext nasm ninja-build pkg-config
+        pipx install meson
 
     # Gradle 8.14 can't run on the runner's default JDK (25).
     - name: Set up JDK 21
@@ -24,6 +25,9 @@ jobs:
       with:
         distribution: temurin
         java-version: "21"
+
+    - name: Build native libraries
+      run: python3 lib_ass/src/main/cpp/build_libass_android.py --sdk-path "$ANDROID_HOME"
 
     - name: Publish to Maven Central Repository
       run: ./gradlew publishAndReleaseToMavenCentral --no-configuration-cache

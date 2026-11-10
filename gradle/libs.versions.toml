@@ -1,4 +1,7 @@
 [versions]
+# Shared by Gradle and lib_ass/src/main/cpp/build_libass_android.py
+minSdk = "23"
+ndkVersion = "28.1.13356709"
 agp = "9.6.0-alpha03"
 coreKtx = "1.16.0"
 annotation = "1.9.1"
