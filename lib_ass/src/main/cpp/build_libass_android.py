@@ -1,3 +1,4 @@
+import io
 import os
 import shutil
 import subprocess
@@ -343,9 +344,9 @@ def build_project(
         project_build_dir.mkdir(exist_ok=True)
 
         if project.is_shared:
-            default_library = ["--enable-shared", "--disable-static"]
+            library_flags = ["--enable-shared", "--disable-static"]
         else:
-            default_library = ["--enable-static", "--disable-shared"]
+            library_flags = ["--enable-static", "--disable-shared"]
 
         is_configured = project_build_dir.joinpath("config.status").is_file()
         if reconfigure or not is_configured:
@@ -356,7 +357,7 @@ def build_project(
                     f"--host={target.triple}",
                     f"--prefix={toolchain_build_env.PREFIX}",
                     "--with-pic",
-                ] + build_flags + default_library,
+                ] + build_flags + library_flags,
                 cwd=project_build_dir,
                 check=True,
                 env=env_autotools,
@@ -380,7 +381,8 @@ def main() -> None:
     # When stdout isn't a terminal (ex: github actions), print() output is buffered,
     # while subprocesses (Gradle, meson, make) write directly to stdout.
     # Flush at every newline so the messages of this script appear in order with the subprocess output.
-    sys.stdout.reconfigure(line_buffering=True)
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(line_buffering=True)
 
     parser = ArgumentParser(description="Build libass for android")
     parser.add_argument(
