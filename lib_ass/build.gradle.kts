@@ -1,20 +1,19 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import com.vanniktech.maven.publish.AndroidSingleVariantLibrary
 
 plugins {
     alias(libs.plugins.android.library)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.maven.publish)
 }
 
 android {
     namespace = "io.github.peerless2012.ass"
     compileSdk = 36
-    ndkVersion = "28.1.13356709"
+    ndkVersion = libs.versions.ndkVersion.get()
 
     defaultConfig {
-        minSdk = 23
+        minSdk = libs.versions.minSdk.get().toInt()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        consumerProguardFiles("consumer-rules.pro")
         externalNativeBuild {
             cmake {
                 arguments += listOf("-DANDROID_STL=c++_shared")
@@ -54,21 +53,32 @@ android {
         targetCompatibility = JavaVersion.VERSION_11
     }
 
-    kotlinOptions {
-        jvmTarget = "11"
-    }
-
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
+            // TODO set cmake version to 4.2.0 or higher
         }
     }
 
     prefab {
         create("ass") {
-            headers = "src/main/cpp/include"
+            headers = "src/main/cpp/build_native_lib/include"
         }
+    }
+}
+
+// Used by build_libass_android.py to install the NDK (resolving the NDK directory
+// makes the Android Gradle Plugin download ndkVersion if it's missing).
+tasks.register("installNdk") {
+    val ndkDirectory = androidComponents.sdkComponents.ndkDirectory
+    doLast {
+        println("NDK: ${ndkDirectory.get().asFile}")
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = JvmTarget.JVM_11
     }
 }
 

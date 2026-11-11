@@ -1,6 +1,8 @@
 [versions]
-agp = "8.13.1"
-kotlin = "2.2.0"
+# Shared by Gradle and lib_ass/src/main/cpp/build_libass_android.py
+minSdk = "23"
+ndkVersion = "28.1.13356709"
+agp = "9.6.0-alpha03"
 coreKtx = "1.16.0"
 annotation = "1.9.1"
 annotation-experimental = "1.5.1"
@@ -31,6 +33,5 @@ androidx-media3-ui = { group = "androidx.media3", name = "media3-ui", version.re
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 android-library = { id = "com.android.library", version.ref = "agp" }
 maven-publish = { id = "com.vanniktech.maven.publish", version.ref = "publish" }
