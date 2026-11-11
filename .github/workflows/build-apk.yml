@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-apk:
-    name: "Build release APK"
+    name: "Build release APK (Ubuntu)"
     runs-on: ubuntu-latest
 
     steps:
@@ -71,6 +71,7 @@ jobs:
           mingw-w64-ucrt-x86_64-autotools
           mingw-w64-ucrt-x86_64-gperf
           mingw-w64-ucrt-x86_64-nasm
+          mingw-w64-ucrt-x86_64-gcc
 
     # Gradle 8.14 can't run on the runner's default JDK (25).
     - name: Set up JDK 21

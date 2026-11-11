@@ -34,7 +34,7 @@ Install [MSYS2](https://www.msys2.org/), then run this in the **MSYS2 UCRT64** s
 pacman -S --needed make autoconf automake libtool \
   mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-meson mingw-w64-ucrt-x86_64-ninja \
   mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-gperf mingw-w64-ucrt-x86_64-gettext-tools \
-  mingw-w64-ucrt-x86_64-nasm
+  mingw-w64-ucrt-x86_64-nasm mingw-w64-ucrt-x86_64-gcc
 ```
 
 ## Build
