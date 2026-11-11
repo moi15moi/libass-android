@@ -67,12 +67,14 @@ class ToolchainBuildEnv:
 
     CC: str
     CXX: str
+    TARGET_FLAG: str
     AR: str
     LD: str
     NM: str
     RANLIB: str
     STRIP: str
     LDFLAGS: str
+    PREFIX: str
     DESTDIR: str
     PKG_CONFIG_LIBDIR: str
 
@@ -106,13 +108,14 @@ def create_meson_cross_file(target: Target, toolchain_build_env: ToolchainBuildE
     """
     meson_cross_file_content = dedent(f"""
     [built-in options]
+    prefix = {meson_string(toolchain_build_env.PREFIX)}
     wrap_mode = 'nodownload'
     c_link_args = {meson_string(toolchain_build_env.LDFLAGS)}
     cpp_link_args = {meson_string(toolchain_build_env.LDFLAGS)}
 
     [binaries]
-    c = {meson_string(toolchain_build_env.CC)}
-    cpp = {meson_string(toolchain_build_env.CXX)}
+    c = [{meson_string(toolchain_build_env.CC)}, '{toolchain_build_env.TARGET_FLAG}']
+    cpp = [{meson_string(toolchain_build_env.CXX)}, '{toolchain_build_env.TARGET_FLAG}']
     c_ld = {meson_string(toolchain_build_env.LD)}
     cpp_ld = {meson_string(toolchain_build_env.LD)}
     ar = {meson_string(toolchain_build_env.AR)}
@@ -153,8 +156,8 @@ def prepare_autotools_env(toolchain_build_env: ToolchainBuildEnv, debug: bool) -
     """
     env = os.environ.copy()
     env.update({
-        "CC": toolchain_build_env.CC,
-        "CXX": toolchain_build_env.CXX,
+        "CC": f"{toolchain_build_env.CC} {toolchain_build_env.TARGET_FLAG}",
+        "CXX": f"{toolchain_build_env.CXX} {toolchain_build_env.TARGET_FLAG}",
         "AR": toolchain_build_env.AR,
         "LD": toolchain_build_env.LD,
         "NM": toolchain_build_env.NM,
@@ -245,7 +248,6 @@ def get_toolchain_path(ndk_path: Path) -> Path:
 
     # See NDK OS Variant in https://developer.android.com/ndk/guides/other_build_systems#overview
     if system_name == "Windows":
-        # We don't really support Windows cause autotools doesn't work on Windows.
         os_name = "windows-x86_64"
     elif system_name == "Linux":
         os_name = "linux-x86_64"
@@ -275,7 +277,7 @@ def bootstrap_project(project: Project, reconfigure: bool) -> None:
         # NOCONFIGURE stops some autogen.sh scripts (ex: libunibreak) from also running configure.
         env = os.environ.copy()
         env["NOCONFIGURE"] = "1"
-        subprocess.run([f"./{project.autogen_script}"], cwd=project.source_dir, check=True, env=env, encoding="utf-8")
+        subprocess.run(["sh", project.autogen_script], cwd=project.source_dir, check=True, env=env, encoding="utf-8")
 
 
 def build_project(
@@ -349,8 +351,10 @@ def build_project(
         if reconfigure or not is_configured:
             subprocess.run(
                 [
-                    str(project.source_dir.joinpath("configure")),
+                    "sh",
+                    Path(os.path.relpath(project.source_dir.joinpath("configure"), project_build_dir)).as_posix(),
                     f"--host={target.triple}",
+                    f"--prefix={toolchain_build_env.PREFIX}",
                     "--with-pic",
                 ] + build_flags + default_library,
                 cwd=project_build_dir,
@@ -452,6 +456,8 @@ def main() -> None:
     for project in projects:
         bootstrap_project(project, need_reconfigure)
 
+    prefix = "/usr/local"
+
     for target in targets:
         destdir = build_dir.joinpath(target.abi)
         if destdir.is_dir():
@@ -460,16 +466,18 @@ def main() -> None:
 
         # See https://developer.android.com/ndk/guides/other_build_systems#autoconf
         toolchain_build_env = ToolchainBuildEnv(
-            str(toolchain_path.joinpath("bin", f'{target.triple}{api_level}-clang')),
-            str(toolchain_path.joinpath("bin", f'{target.triple}{api_level}-clang++')),
+            str(toolchain_path.joinpath("bin", "clang")),
+            str(toolchain_path.joinpath("bin", "clang++")),
+            f"--target={target.triple}{api_level}",
             str(toolchain_path.joinpath("bin", "llvm-ar")),
             str(toolchain_path.joinpath("bin", "ld")),
             str(toolchain_path.joinpath("bin", "llvm-nm")),
             str(toolchain_path.joinpath("bin", "llvm-ranlib")),
             str(toolchain_path.joinpath("bin", "llvm-strip")),
             "-Wl,-z,max-page-size=16384", # Android require 16 KB page sizes: https://developer.android.com/guide/practices/page-sizes
+            prefix,
             str(destdir),
-            str(destdir.joinpath("usr", "local", "lib", "pkgconfig"))
+            str(destdir.joinpath(prefix.lstrip("/"), "lib", "pkgconfig"))
         )
         meson_cross_file = create_meson_cross_file(target, toolchain_build_env, build_dir)
 
@@ -481,7 +489,7 @@ def main() -> None:
     include_dir = build_dir.joinpath("include")
     if include_dir.exists():
         shutil.rmtree(include_dir)
-    shutil.copytree(build_dir.joinpath(targets[0].abi, "usr", "local", "include"), include_dir)
+    shutil.copytree(build_dir.joinpath(targets[0].abi, prefix.lstrip("/"), "include"), include_dir)
 
 
 if __name__ == "__main__":

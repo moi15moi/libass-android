@@ -7,7 +7,7 @@ and again after updating a submodule in `third_party/`.
 
 ## Requirements
 
-Linux or macOS with:
+Linux, macOS or Windows (MSYS2 UCRT64) with:
 - `python3` (3.11 or newer)
 - A JDK (17 or newer), used by Gradle to install the NDK
 - `make`, `meson`, `ninja`, `pkg-config`, `autoconf`, `automake`, `libtool`, `gperf`, `gettext` and `nasm`
@@ -28,11 +28,25 @@ Fontconfig requires meson 1.11.0 or newer, which is more recent than the version
 brew install autoconf automake libtool gperf gettext nasm meson ninja pkg-config
 ```
 
+### Windows (MSYS2 UCRT64)
+Install [MSYS2](https://www.msys2.org/), then run this in the **MSYS2 UCRT64** shell:
+```sh
+pacman -S --needed make autoconf automake libtool \
+  mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-meson mingw-w64-ucrt-x86_64-ninja \
+  mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-gperf mingw-w64-ucrt-x86_64-gettext-tools \
+  mingw-w64-ucrt-x86_64-nasm
+```
+
 ## Build
 
-Run:
+Run from the repository root:
 ```sh
 python3 lib_ass/src/main/cpp/build_libass_android.py --sdk-path <Android SDK path>
+```
+
+On Windows, run it from the MSYS2 UCRT64 shell with `MSYS2_ENV_CONV_EXCL=*`:
+```sh
+MSYS2_ENV_CONV_EXCL=* python3 lib_ass/src/main/cpp/build_libass_android.py --sdk-path <Android SDK path>
 ```
 
 ### Options

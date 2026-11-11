@@ -42,3 +42,46 @@ jobs:
         path: app/build/outputs/apk/release/*.apk
         archive: false
         if-no-files-found: error
+
+  # Checks that the native libraries also build on Windows (with MSYS2, see lib_ass/src/main/cpp/README.md).
+  build-apk-windows:
+    name: "Build release APK (Windows)"
+    runs-on: windows-latest
+
+    steps:
+    # Git on the runner converts LF to CRLF on checkout, which breaks the autotools shell scripts.
+    - name: Disable CRLF conversion
+      run: git config --global core.autocrlf false
+
+    - name: Checkout code
+      uses: actions/checkout@v7
+      with:
+        submodules: recursive
+
+    - name: Install native build dependencies
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: UCRT64
+        update: true
+        install: >-
+          mingw-w64-ucrt-x86_64-python
+          mingw-w64-ucrt-x86_64-meson
+          mingw-w64-ucrt-x86_64-ninja
+          mingw-w64-ucrt-x86_64-pkgconf
+          mingw-w64-ucrt-x86_64-autotools
+          mingw-w64-ucrt-x86_64-gperf
+          mingw-w64-ucrt-x86_64-nasm
+
+    # Gradle 8.14 can't run on the runner's default JDK (25).
+    - name: Set up JDK 21
+      uses: actions/setup-java@v5
+      with:
+        distribution: temurin
+        java-version: "21"
+
+    - name: Build native libraries
+      shell: msys2 {0}
+      run: MSYS2_ENV_CONV_EXCL='*' python lib_ass/src/main/cpp/build_libass_android.py --sdk-path "$ANDROID_HOME"
+
+    - name: Build release APK
+      run: ./gradlew.bat :app:assembleRelease
